@@ -113,6 +113,8 @@ extern NSString* const MGSettingsChangedNotification;  // pull mode or diff layo
 - (void)checkoutRef:(int)ref;
 - (void)checkoutCommit:(int32_t)commit;  // a branch at the commit, else the commit itself
 - (void)newBranchAt:(int32_t)commit;     // asks for the name; -1: at HEAD
+- (void)newTagAt:(int32_t)commit;        // asks for the name
+- (void)deleteBranch:(const std::wstring&)local remote:(const std::wstring&)remote;  // by name; empty: kept
 - (void)revertCommit:(int32_t)commit;
 - (void)dropStash:(int)index;
 - (void)discardFile:(const FileChange&)file;

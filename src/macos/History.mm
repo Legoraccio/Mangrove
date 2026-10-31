@@ -560,7 +560,16 @@ static void DrawChip(const RepoData& d, const GraphRow& row, NSRect b) {
         [menu removeAllItems];
         return;
     }
-    [_owner fillCommitMenu:menu commit:s->graph->rows[(size_t)row].commit];
+    // On the branch and tag chips: the menu of the branch or tag shown; elsewhere the commit's.
+    const int32_t c = s->graph->rows[(size_t)row].commit;
+    if (c >= 0 && s->data && _table.clickedColumn == [_table columnWithIdentifier:@"refs"]) {
+        auto it = s->data->labels.find(c);
+        if (it != s->data->labels.end() && !it->second.empty()) {
+            [_owner fillRefMenu:menu ref:it->second[0].ref];
+            return;
+        }
+    }
+    [_owner fillCommitMenu:menu commit:c];
 }
 
 @end

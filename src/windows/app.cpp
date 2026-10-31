@@ -1130,7 +1130,12 @@ void App::OnRightClick(float x, float y) {
             SelectRow(*t, row, false);
             refPopup = {};
             Paint();
-            ShowCommitMenu(*t, row, x, y);
+            // A branch or tag chip: the menu of the branch or tag it shows; elsewhere the commit's.
+            int ref = -1;
+            if (z->id == Hit::GraphLabel && t->data)
+                if (auto it = t->data->labels.find(z->b); it != t->data->labels.end() && !it->second.empty()) ref = it->second[0].ref;
+            if (ref >= 0) ShowRefMenu(*t, ref, x, y);
+            else ShowCommitMenu(*t, row, x, y);
         }
     } else if (z->id == Hit::RefPopupRow && t->data) {
         auto it = t->data->labels.find(z->b);
@@ -1306,7 +1311,7 @@ void App::OnChar(wchar_t ch) {
     if (dialog.active || ch < 32 || ch == 127) return;
     if (inlineInput.active) {
         if (inlineInput.edit.text.size() < 200) {
-            const wchar_t c = ch == L' ' ? L'-' : ch;  // spaces become dashes in branch names
+            const wchar_t c = ch == L' ' ? L'-' : ch;  // spaces become dashes in branch and tag names
             inlineInput.edit.Insert(std::wstring_view(&c, 1));
             inlineInput.error.clear();
             Invalidate();
@@ -1574,6 +1579,11 @@ void App::ShowRefMenu(RepoTab& t, int ri, float x, float y) {
         AppendMenuW(m, MF_STRING | busy | (r.head ? MF_GRAYED : 0), 1, L"Check out");
     }
     AppendMenuW(m, MF_STRING | busy | (r.commit < 0 ? MF_GRAYED : 0), 2, L"Create branch here\u2026");
+    AppendMenuW(m, MF_STRING | busy | (r.commit < 0 ? MF_GRAYED : 0), 4, L"Create tag here\u2026");
+    const std::vector<DeleteChoice> deletes = DeleteChoices(t, ri);  // the branch here, the remote one, both
+    if (!deletes.empty()) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    for (size_t k = 0; k < deletes.size(); ++k)
+        AppendMenuW(m, MF_STRING | busy | (deletes[k].enabled ? 0 : MF_GRAYED), 10 + k, (deletes[k].label + L"\u2026").c_str());
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, 3, r.kind == RefKind::Tag ? L"Copy tag name" : L"Copy branch name");
     const int cmd = Popup(hwnd, m, x, y);
@@ -1581,11 +1591,14 @@ void App::ShowRefMenu(RepoTab& t, int ri, float x, float y) {
     switch (cmd) {
     case 1: t.CheckoutRef(ri); break;
     case 2:
+    case 4:
         SelectCommit(t, r.commit);
-        BeginBranchInput(t, r.commit);
+        BeginBranchInput(t, r.commit, cmd == 4);
         break;
     case 3: CopyToClipboard(hwnd, r.name); break;
-    default: break;
+    default:
+        if (cmd >= 10 && cmd < 10 + (int)deletes.size()) DoDeleteBranch(t, deletes[(size_t)cmd - 10].local, deletes[(size_t)cmd - 10].remote);
+        break;
     }
     Invalidate();
 }
@@ -1647,6 +1660,7 @@ void App::ShowCommitMenu(RepoTab& t, int32_t row, float x, float y) {
         }
     }
     AppendMenuW(m, MF_STRING | busy, 10, L"Create branch here…\tCtrl+B");
+    AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) ? MF_GRAYED : 0), 13, L"Create tag here…");
     AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) ? MF_GRAYED : 0), 11, L"Check out this commit (detached HEAD)");
     AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) || d.unborn ? MF_GRAYED : 0), 12, L"Revert this commit…");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -1666,6 +1680,7 @@ void App::ShowCommitMenu(RepoTab& t, int32_t row, float x, float y) {
     }
     switch (cmd) {
     case 10: BeginBranchInput(t, c); break;
+    case 13: BeginBranchInput(t, c, true); break;
     case 11: t.CheckoutCommit(c); break;
     case 12: DoRevert(t, c); break;
     case 1: CopyToClipboard(hwnd, cm.id.Hex()); break;

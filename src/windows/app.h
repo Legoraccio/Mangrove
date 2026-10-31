@@ -307,7 +307,7 @@ public:
     Drag drag = Drag::None;
     int dragEdit = 0;   // text field being drag-selected (see EditById)
     int editFocus = 0;  // focused commit field of the active tab: 1 summary, 2 description
-    TextEdit* EditById(int id);  // 1 summary, 2 description, 3 new-branch name, 4 search
+    TextEdit* EditById(int id);  // 1 summary, 2 description, 3 new branch or tag name, 4 search
     float dragStart = 0, dragOrig = 0, dragGrab = 0;
     RectF dragArea;
     RectF scrollArea[4];  // graph, sidebar, details, diff (set while painting)
@@ -345,6 +345,7 @@ public:
     void DoRevert(RepoTab& t, int32_t commit);
     void DoDiscard(RepoTab& t, const FileChange& f);
     void DoDropStash(int stashIndex);
+    void DoDeleteBranch(RepoTab& t, const std::wstring& local, const std::wstring& remote);  // by name; empty: kept
     void DoCommit();
     void ToggleAmend(RepoTab& t);
     void ShowFileMenu(RepoTab& t, int section, int row, float x, float y);
@@ -367,13 +368,14 @@ public:
     void ClearDiffSelection(RepoTab& t);
     // Command bar buttons (Action): 0 undo, 1 redo, 2 pull, 3 push, 4 new branch, 5 stash, 6 pop, 7 terminal, 8 fetch.
     bool ToolEnabled(RepoTab* t, int button, std::wstring* tip) { return t && t->CanRun(button, tip); }
-    void BeginBranchInput(RepoTab& t, int32_t commit);
+    void BeginBranchInput(RepoTab& t, int32_t commit, bool tag = false);
     void CommitBranchInput();
     void CancelBranchInput();
 
-    // inline "new branch" name field shown in the BRANCH / TAG column
+    // inline "new branch" (or "new tag") name field shown in the BRANCH / TAG column
     struct InlineInput {
         bool active = false;
+        bool tag = false;     // the name of a tag
         std::weak_ptr<RepoTab> tab;
         int32_t commit = -1;  // -1 = HEAD
         TextEdit edit;

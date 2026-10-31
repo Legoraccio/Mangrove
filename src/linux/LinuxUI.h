@@ -255,6 +255,8 @@ public:
     void CheckoutRef(int ref);
     void CheckoutCommit(int32_t commit);  // a branch at the commit, else the commit itself
     void NewBranchAt(int32_t commit);     // asks for the name; -1: at HEAD
+    void NewTagAt(int32_t commit);        // asks for the name
+    void DeleteBranch(const std::wstring& local, const std::wstring& remote);  // by name; empty: kept
     void RevertCommit(int32_t commit);
     void DropStash(int index);
     void DiscardFile(const FileChange& f);
@@ -280,6 +282,7 @@ private:
     void BuildStart();
     void BuildRepository();
     void SessionEvent_(SessionEvent e);
+    void NewRefAt(int32_t commit, bool tag);  // the name of a new branch or tag
     void UpdateContent();
     void SelectionChanged();
     void Changed();  // the window shows this tab's state anew

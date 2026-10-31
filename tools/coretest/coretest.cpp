@@ -10,6 +10,7 @@
 #include "present.h"
 #include "settings.h"
 #include "text.h"
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -316,6 +317,148 @@ static void TestRepository(const std::filesystem::path& dir) {
     CHECK(stats.size() == 1 && stats[0].second.added == 2 && stats[0].second.deleted == 1);
 }
 
+// ---------------------------------------------------------------- operations of a session
+
+// The session's "UI thread" is the test's own: what the core posts waits here until Pump runs it.
+static std::mutex g_postedMutex;
+static std::deque<std::function<void()>> g_posted;
+
+static bool Pump(const std::function<bool()>& done) {
+    const double until = NowMs() + 30000;
+    while (!done()) {
+        std::function<void()> fn;
+        {
+            std::lock_guard<std::mutex> lk(g_postedMutex);
+            if (!g_posted.empty()) {
+                fn = std::move(g_posted.front());
+                g_posted.pop_front();
+            }
+        }
+        if (fn) fn();
+        else if (NowMs() > until) return false;
+        else std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+static const FileChange* Unstaged(const WorkStatus& st, const std::wstring& path) {
+    for (const FileChange& f : st.unstaged)
+        if (f.path == path) return &f;
+    return nullptr;
+}
+
+// Tags, deleting branches (here and on a remote) with undo, and discarding a submodule and a nested repository.
+static void TestSession(const std::filesystem::path& dir) {
+    SetMainDispatcher([](std::function<void()> fn) {
+        std::lock_guard<std::mutex> lk(g_postedMutex);
+        g_posted.push_back(std::move(fn));
+    });
+    const std::wstring origin = (dir / L"origin.git").wstring(), lib = (dir / L"lib").wstring(), root = (dir / L"work").wstring();
+    for (const std::wstring& p : { origin, lib, root }) std::filesystem::create_directories(p);
+    if (!Git(origin, L"init -q --bare") || !Git(lib, L"init -q -b main") || !Git(root, L"init -q -b main")) return;
+    Put(lib, L"lib.txt", "one\n");
+    Git(lib, L"add -A");
+    Git(lib, L"commit -qm \"Library\"");
+    Put(lib, L"lib.txt", "two\n");
+    Git(lib, L"commit -qam \"Library, again\"");
+    Put(root, L"a.txt", "a\n");
+    Git(root, L"add -A");
+    Git(root, L"commit -qm \"First\"");
+    Git(root, L"-c protocol.file.allow=always submodule add -q ../lib lib");
+    Git(root, L"commit -qm \"Add the library\"");
+    Git(root, L"remote add origin " + QuoteArg(origin));
+    Git(root, L"push -q -u origin main");
+    Git(root, L"switch -q -c feature");
+    Put(root, L"f.txt", "feature\n");
+    Git(root, L"add f.txt");
+    Git(root, L"commit -qm \"Feature work\"");
+    Git(root, L"push -q -u origin feature");
+    Git(root, L"switch -q -c local-only main");
+    Git(root, L"commit -q --allow-empty -m \"Not pushed\"");
+    Git(root, L"switch -q main");
+
+    auto s = std::make_shared<RepoSession>();
+    s->path = root;
+    auto idle = [&] { return !s->loading && !s->opBusy && s->opQueue.empty(); };
+    s->StartLoad(false);
+    CHECK(Pump(idle) && s->data);
+    if (!s->data) return;
+
+    // a tag, undone and done again
+    CHECK(!s->CheckNewTag(L"").empty() && !s->CheckNewTag(L"v1 0").empty() && s->CheckNewTag(L"v1.0").empty());
+    CHECK(s->CreateTag(L"v1.0", s->data->headCommit).empty() && Pump(idle));
+    const int tag = FindRef(*s->data, RefKind::Tag, L"v1.0");
+    CHECK(tag >= 0 && s->data->refs[(size_t)tag].commit == s->data->headCommit);
+    CHECK(s->CheckNewTag(L"v1.0").find(L"already exists") != std::wstring::npos);
+    CHECK(!s->undo.empty() && s->undo.back().kind == UndoEntry::Kind::CreateTag);
+    s->Undo();
+    CHECK(Pump(idle) && FindRef(*s->data, RefKind::Tag, L"v1.0") < 0);
+    s->Redo();
+    CHECK(Pump(idle) && FindRef(*s->data, RefKind::Tag, L"v1.0") >= 0);
+
+    // the branches that go together, and the commits only they have
+    {
+        const RepoData& d = *s->data;
+        const int mainRef = FindRef(d, RefKind::Local, L"main"), feature = FindRef(d, RefKind::Local, L"feature");
+        const int originFeature = FindRef(d, RefKind::Remote, L"origin/feature"), localOnly = FindRef(d, RefKind::Local, L"local-only");
+        CHECK(mainRef >= 0 && feature >= 0 && originFeature >= 0 && localOnly >= 0);
+        CHECK(s->PairOf(feature).remote == originFeature && s->PairOf(originFeature).local == feature && s->PairOf(localOnly).remote < 0);
+        CHECK(s->CommitsOnlyOn({ feature }) == 0 && s->CommitsOnlyOn({ feature, originFeature }) == 1 && s->CommitsOnlyOn({ localOnly }) == 1);
+        const std::vector<DeleteChoice> mainChoices = DeleteChoices(*s, mainRef);
+        CHECK(mainChoices.size() == 3 && !mainChoices[0].enabled && mainChoices[1].enabled && !mainChoices[2].enabled);
+        CHECK(DeleteChoices(*s, localOnly).size() == 1 && DeleteChoices(*s, FindRef(d, RefKind::Tag, L"v1.0")).empty());
+        CHECK(DeleteBranchPrompt(*s, L"local-only", L"").message.find(L"1 commit is on no other branch") != std::wstring::npos);
+        CHECK(DeleteBranchPrompt(*s, L"feature", L"origin/feature").message.find(L"can't be undone") != std::wstring::npos);
+        s->DeleteBranch(L"main", L"");  // checked out: refused before anything runs
+        CHECK(!s->opBusy && s->notice.error);
+        s->DeleteBranch(L"", L"origin/feature");
+    }
+    CHECK(Pump(idle));
+    CHECK(FindRef(*s->data, RefKind::Remote, L"origin/feature") < 0 && FindRef(*s->data, RefKind::Local, L"feature") >= 0);
+    CHECK(!RunGitOp(origin, L"", L"rev-parse -q --verify refs/heads/feature").ok());
+    const int feature = FindRef(*s->data, RefKind::Local, L"feature");
+    const std::wstring featureSha = feature >= 0 ? s->data->refs[(size_t)feature].target.Hex() : L"";
+    s->DeleteBranch(L"feature", L"");
+    CHECK(Pump(idle) && FindRef(*s->data, RefKind::Local, L"feature") < 0);
+    s->Undo();
+    CHECK(Pump(idle));
+    const int back = FindRef(*s->data, RefKind::Local, L"feature");
+    CHECK(back >= 0 && s->data->refs[(size_t)back].target.Hex() == featureSha);
+
+    // a submodule that checked out another commit goes back to the one recorded for it
+    const std::wstring sub = PathJoin(root, L"lib");
+    const std::wstring recorded = Widen(TrimSv(RunGitOp(sub, L"", L"rev-parse HEAD").out));
+    Git(sub, L"checkout -q HEAD~1");
+    std::shared_ptr<WorkStatus> st = LoadWorkStatus(root, L"");
+    const FileChange* moved = Unstaged(*st, L"lib");
+    CHECK(moved && moved->submodule && moved->status == L'M' && !Unstaged(*st, L"a.txt"));
+    if (moved) {
+        CHECK(DiscardPrompt(*moved).message.find(L"submodule") != std::wstring::npos);
+        s->Discard(*moved);
+        CHECK(Pump(idle));
+    }
+    CHECK(Widen(TrimSv(RunGitOp(sub, L"", L"rev-parse HEAD").out)) == recorded);
+    // a repository of its own inside the working tree is deleted
+    const std::wstring nested = PathJoin(root, L"nested");
+    std::filesystem::create_directories(nested);
+    Git(nested, L"init -q");
+    Put(nested, L"n.txt", "n\n");
+    st = LoadWorkStatus(root, L"");
+    const FileChange* repo = Unstaged(*st, L"nested/");
+    CHECK(repo && repo->NestedRepository() && !repo->submodule);
+    if (repo) {
+        s->Discard(*repo);
+        CHECK(Pump(idle));
+    }
+    CHECK(!DirExists(nested));
+    st = LoadWorkStatus(root, L"");
+    CHECK(st->valid && !st->Dirty());
+
+    s.reset();
+    const double until = NowMs() + 500;
+    Pump([&] { return NowMs() > until; });  // what is still posted finds the session gone
+}
+
 static int Run() {
     TestText();
     TestTrees();
@@ -326,6 +469,7 @@ static int Run() {
     TestSettings(dir);
     TestAccounts(dir);
     TestRepository(dir);
+    TestSession(dir);
     std::filesystem::remove_all(dir, ec);
     std::printf("coretest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

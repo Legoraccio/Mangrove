@@ -9,18 +9,25 @@
 //
 // Methods are called on the UI thread; work runs on background threads and comes back to the UI thread
 // (RunOnMain) where the session updates itself and tells the app through onEvent. The app decides how to
-// show it and asks the user before destructive actions (Discard, DropStash, Revert, discarding patches).
+// show it and asks the user before destructive actions (Discard, DropStash, Revert, DeleteBranch, discarding patches).
 
 // ---------------------------------------------------------------- operations
 
 // An action Mangrove performed that can be reverted. HEAD positions are "b:<branch>" or "d:<sha>".
 struct UndoEntry {
-    enum class Kind { Checkout, CreateBranch, Stash, Commit, Revert } kind = Kind::Checkout;
+    enum class Kind { Checkout, CreateBranch, Stash, Commit, Revert, CreateTag, DeleteBranch } kind = Kind::Checkout;
     std::wstring label;        // e.g. "checkout main"
     std::wstring from, to;     // HEAD before / after
-    std::wstring branch, sha;  // created branch and the commit it was created at
+    std::wstring branch, sha;  // created or deleted branch (or the created tag) and its commit
+    std::wstring upstream;     // a deleted branch's upstream, set again when it comes back
     std::wstring stash;        // stash commit created by the action
     std::wstring redoArgs;     // git arguments that perform the action again
+};
+
+// A branch and the one that goes with it, by name: a local branch and its remote branch. Indices in RepoData::refs,
+// -1 when there is none.
+struct BranchPair {
+    int local = -1, remote = -1;
 };
 
 // Context handed to a git operation running on a worker thread.
@@ -183,6 +190,14 @@ public:
     bool CanCheckout(int32_t commit, std::wstring* tip) const;  // what "Check out" does for a commit, and whether it can
     std::wstring CheckNewBranch(const std::wstring& name) const;          // why a new branch can't have this name; empty when it can
     std::wstring CreateBranch(const std::wstring& name, int32_t commit);  // why it can't; empty once started
+    std::wstring CheckNewTag(const std::wstring& name) const;             // why a new tag can't have this name; empty when it can
+    std::wstring CreateTag(const std::wstring& name, int32_t commit);     // a lightweight tag; why it can't, empty once started
+    // The local branch and the remote branch of the same name that go together: for a local branch the one it
+    // tracks (or, with no upstream, one of the same name, origin's first); for a remote branch the local one.
+    BranchPair PairOf(int ref) const;
+    int32_t CommitsOnlyOn(const std::vector<int>& refs) const;  // commits no other branch, tag or HEAD has; -1 when unknown
+    // A local branch, a remote one or both, by name ("feature", "origin/feature"; empty: kept). The app asks first.
+    void DeleteBranch(const std::wstring& local, const std::wstring& remote);
     void Undo();
     void Redo();
     void Stage(const std::vector<std::wstring>& paths, bool stage);  // paths empty = everything

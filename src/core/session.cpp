@@ -920,6 +920,154 @@ std::wstring RepoSession::CreateBranch(const std::wstring& input, int32_t commit
     return L"";
 }
 
+// ---- tags
+
+std::wstring RepoSession::CheckNewTag(const std::wstring& input) const {
+    const std::wstring name = BranchNameOf(input);
+    std::wstring err = CheckTagName(name);
+    if (err.empty() && data)
+        for (const Ref& r : data->refs)
+            if (r.kind == RefKind::Tag && r.name == name) return L"A tag named '" + name + L"' already exists.";
+    return err;
+}
+
+std::wstring RepoSession::CreateTag(const std::wstring& input, int32_t commit) {
+    if (!data || opBusy) return L"Another operation is running.";
+    const std::wstring name = BranchNameOf(input);
+    if (std::wstring err = CheckNewTag(name); !err.empty()) return err;
+    const RepoData& d = *data;
+    const int32_t at = commit >= 0 ? commit : d.headCommit;
+    if (at < 0 || at >= (int32_t)d.commits.size() || (d.commits[(size_t)at].flags & CF_STASH)) return L"Only commits can be tagged.";
+    const ::Commit& cm = d.commits[(size_t)at];
+    const std::wstring sha = cm.id.Hex(), subject = Widen(d.Subject(cm));
+    // A lightweight tag; tag.gpgSign would make it a signed one, with a message asked in an editor.
+    const std::wstring args = L"-c tag.gpgSign=false tag " + QuoteArg(name) + L" " + sha;
+    RunOp(-1, L"Creating the tag " + name, [args, name, sha, subject](const OpCtx& c) {
+        OpOutcome o;
+        GitOpResult r = c.Run(args);
+        if (!r.ok()) {
+            o.title = L"Couldn't create the tag";
+            o.message = GitErrorText(r);
+            return o;
+        }
+        o.ok = true;
+        o.title = L"Created the tag " + name;
+        o.message = L"It marks " + sha.substr(0, 7) + L" “" + subject + L"”.";
+        o.hasUndo = true;
+        o.undo.kind = UndoEntry::Kind::CreateTag;
+        o.undo.label = L"create tag " + name;
+        o.undo.branch = name;
+        o.undo.sha = sha;
+        o.undo.redoArgs = args;
+        return o;
+    });
+    return L"";
+}
+
+// ---- deleting branches
+
+BranchPair RepoSession::PairOf(int ri) const {
+    BranchPair p;
+    if (!data || ri < 0 || ri >= (int)data->refs.size()) return p;
+    const RepoData& d = *data;
+    const Ref& r = d.refs[(size_t)ri];
+    // Of the same name only: a branch made from origin/main tracks it, and doesn't go with it.
+    auto pair = [](const Ref& local, const Ref& remote) {
+        return local.name == remote.branch && (local.upstream.empty() || local.upstream == remote.name);
+    };
+    if (r.kind == RefKind::Local) {
+        p.local = ri;
+        for (size_t i = 0; i < d.refs.size(); ++i) {
+            const Ref& x = d.refs[i];
+            if (x.kind == RefKind::Remote && pair(r, x) && (p.remote < 0 || x.remote == L"origin")) p.remote = (int)i;
+        }
+    } else if (r.kind == RefKind::Remote) {
+        p.remote = ri;
+        for (size_t i = 0; i < d.refs.size(); ++i)
+            if (d.refs[i].kind == RefKind::Local && pair(d.refs[i], r)) p.local = (int)i;
+    }
+    return p;
+}
+
+int32_t RepoSession::CommitsOnlyOn(const std::vector<int>& refs) const {
+    if (!data || data->headOnly) return -1;  // the other branches weren't loaded
+    const RepoData& d = *data;
+    std::vector<uint8_t> mark(d.commits.size(), 0);  // 1: another branch, a tag or HEAD has it; 2: one of `refs`
+    for (size_t i = 0; i < d.refs.size(); ++i) {
+        const bool going = std::find(refs.begin(), refs.end(), (int)i) != refs.end();
+        const int32_t c = d.refs[i].commit;
+        if (c < 0) {
+            if (going) return -1;
+            continue;
+        }
+        mark[(size_t)c] |= going ? 2 : 1;
+    }
+    if (d.headCommit >= 0) mark[(size_t)d.headCommit] |= 1;
+    for (size_t i = 0; i < mark.size(); ++i) {  // children come before their parents: one pass carries the marks down
+        if (!mark[i]) continue;
+        const ::Commit& c = d.commits[i];
+        const int32_t* p = d.Parents(c);
+        for (uint16_t k = 0; k < c.parentCount; ++k)
+            if (p[k] >= 0) mark[(size_t)p[k]] |= mark[i];
+    }
+    int32_t only = 0;
+    for (const uint8_t m : mark) only += m == 2;
+    return only;
+}
+
+void RepoSession::DeleteBranch(const std::wstring& local, const std::wstring& remote) {
+    if (!data || opBusy) return;
+    const RepoData& d = *data;
+    const int li = local.empty() ? -1 : FindRef(d, RefKind::Local, local), ri = remote.empty() ? -1 : FindRef(d, RefKind::Remote, remote);
+    const Ref* loc = li >= 0 ? &d.refs[(size_t)li] : nullptr;
+    const Ref* rem = ri >= 0 ? &d.refs[(size_t)ri] : nullptr;
+    if (!loc && !rem) return;
+    if (loc && loc->head) {
+        Note(L"Can't delete " + loc->name, L"It is the branch checked out: switch to another branch first.", true);
+        return;
+    }
+    const std::wstring name = loc ? loc->name : L"", sha = loc ? loc->target.Hex() : L"", upstream = loc ? loc->upstream : L"";
+    const std::wstring remoteName = rem ? rem->remote : L"", remoteBranch = rem ? rem->branch : L"", remoteRef = rem ? rem->name : L"";
+    const std::wstring what = loc && rem ? name + L" and " + remoteRef : loc ? name : remoteRef;
+    RunOp(-1, L"Deleting " + what, [name, sha, upstream, remoteName, remoteBranch, remoteRef, what](const OpCtx& c) {
+        OpOutcome o;
+        std::wstring note;
+        // The remote branch first: when the server refuses or can't be reached, nothing is deleted.
+        if (!remoteRef.empty()) {
+            const GitOpResult r = c.RunNet(L"push --progress " + QuoteArg(remoteName) + L" --delete " + QuoteArg(L"refs/heads/" + remoteBranch));
+            if (!r.ok() && Contains(r.err, "remote ref does not exist")) {
+                c.Run(L"branch -d -r " + QuoteArg(remoteRef));  // someone deleted it already: only our copy was left
+                note = L"It was already gone from " + remoteName + L".";
+            } else if (!r.ok()) {
+                o.title = L"Couldn't delete " + remoteRef;
+                o.message = GitErrorText(r);
+                return o;
+            }
+        }
+        if (!name.empty()) {
+            const GitOpResult r = c.Run(L"branch -D " + QuoteArg(name));
+            if (!r.ok()) {
+                o.title = L"Couldn't delete " + name;
+                o.message = (remoteRef.empty() ? L"" : remoteRef + L" was deleted, the local branch wasn't.\n") + GitErrorText(r);
+                return o;
+            }
+        }
+        o.ok = true;
+        o.title = L"Deleted " + what;
+        o.message = note;
+        if (remoteRef.empty()) {  // only a local branch: undo makes it again
+            o.hasUndo = true;
+            o.undo.kind = UndoEntry::Kind::DeleteBranch;
+            o.undo.label = L"delete branch " + name;
+            o.undo.branch = name;
+            o.undo.sha = sha;
+            o.undo.upstream = upstream;
+            o.undo.redoArgs = L"branch -D " + QuoteArg(name);
+        }
+        return o;
+    });
+}
+
 // ---- undo / redo
 
 void RepoSession::Undo() {
@@ -980,6 +1128,21 @@ void RepoSession::Undo() {
             if (r.ok() && !revert) note = L"Its changes are staged again.";
             break;
         }
+        case UndoEntry::Kind::CreateTag:
+            // Only while the tag still marks the commit it was made at.
+            if (RevParse(c, L"refs/tags/" + e.branch) != e.sha) {
+                o.title = L"Can't undo the tag";
+                o.message = L"'" + e.branch + L"' was moved or deleted since.";
+                o.then = dropEntry;
+                return o;
+            }
+            r = c.Run(L"tag -d " + QuoteArg(e.branch));
+            break;
+        case UndoEntry::Kind::DeleteBranch:
+            r = c.Run(L"branch " + QuoteArg(e.branch) + L" " + e.sha);
+            if (r.ok() && !e.upstream.empty())  // when the upstream is gone too, the branch comes back without one
+                c.Run(L"branch " + QuoteArg(L"--set-upstream-to=" + e.upstream) + L" " + QuoteArg(e.branch));
+            break;
         }
         if (!r.ok()) {
             o.title = L"Undo failed";
@@ -1017,6 +1180,16 @@ void RepoSession::Redo() {
                 return o;
             }
             r = c.Run((e.kind == UndoEntry::Kind::Revert ? L"reset --keep " : L"reset --soft ") + e.to.substr(2));
+        } else if (e.kind == UndoEntry::Kind::DeleteBranch) {  // only while the branch is still where it was
+            if (RevParse(c, L"refs/heads/" + e.branch) != e.sha) {
+                o.title = L"Can't redo the " + e.label;
+                o.message = L"'" + e.branch + L"' has moved since the undo.";
+                o.then = [wk] {
+                    if (auto self = wk.lock(); self && !self->redo.empty()) self->redo.pop_back();
+                };
+                return o;
+            }
+            r = c.Run(e.redoArgs);
         } else {
             again.from = HeadSpec(c);
             r = c.Run(e.kind == UndoEntry::Kind::Checkout && !e.to.empty() ? SwitchTo(e.to) : e.redoArgs);
@@ -1127,13 +1300,18 @@ void RepoSession::Stage(const std::vector<std::wstring>& paths, bool stage) {
 
 void RepoSession::Discard(const FileChange& f) {
     if (!data || f.status == L'U') return;
-    const bool untracked = f.status == L'?';
-    const std::wstring args = untracked ? L"--literal-pathspecs clean -f -q -- " + QuoteArg(f.path)
-                                        : L"--literal-pathspecs restore -- " + QuoteArg(f.path);
-    RunOp(-1, L"Discarding changes",
-          [args](const OpCtx& c) {
+    // A submodule checks out the commit recorded for it again (fetched when it isn't there): git restore would
+    // leave it as it is. Changes inside it are kept, or stop the checkout where they are in the way. A repository
+    // of its own that isn't tracked is deleted only with a second -f.
+    std::wstring args;
+    if (f.submodule) args = L"--literal-pathspecs submodule update --checkout -- " + QuoteArg(f.path);
+    else if (f.status == L'?') args = std::wstring(L"--literal-pathspecs clean ") + (f.NestedRepository() ? L"-ffd" : L"-f") + L" -q -- " + QuoteArg(f.path);
+    else args = L"--literal-pathspecs restore -- " + QuoteArg(f.path);
+    const bool net = f.submodule;
+    RunOp(-1, f.submodule ? L"Updating the submodule" : L"Discarding changes",
+          [args, net](const OpCtx& c) {
               OpOutcome o;
-              GitOpResult r = c.Run(args);
+              GitOpResult r = net ? c.RunNet(args) : c.Run(args);
               o.ok = r.ok();
               o.quiet = o.ok;
               o.statusOnly = true;

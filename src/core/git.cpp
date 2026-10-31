@@ -128,27 +128,31 @@ std::wstring GitErrorText(const GitOpResult& r) {
     return w;
 }
 
-std::wstring CheckBranchName(const std::wstring& n) {
-    if (n.empty()) return L"Enter a name for the new branch.";
-    if (n[0] == L'-') return L"A branch name cannot start with '-'.";
+// `what`: "branch" or "tag", as the messages say it.
+static std::wstring CheckRefName(const std::wstring& n, const std::wstring& what) {
+    if (n.empty()) return L"Enter a name for the new " + what + L".";
+    if (n[0] == L'-') return L"A " + what + L" name cannot start with '-'.";
     if (n == L"@" || n == L"HEAD") return L"'" + n + L"' is reserved by Git.";
-    if (n.front() == L'/' || n.back() == L'/' || n.back() == L'.') return L"A branch name cannot start or end with '/' or end with '.'.";
+    if (n.front() == L'/' || n.back() == L'/' || n.back() == L'.') return L"A " + what + L" name cannot start or end with '/' or end with '.'.";
     if (n.find(L"..") != std::wstring::npos || n.find(L"//") != std::wstring::npos || n.find(L"@{") != std::wstring::npos)
-        return L"'..', '//' and '@{' are not allowed in branch names.";
+        return L"'..', '//' and '@{' are not allowed in " + what + L" names.";
     for (wchar_t c : n) {
         if (c < 32 || c == 127) return L"Control characters are not allowed.";
-        if (wcschr(L" ~^:?*[\\", c)) return std::wstring(L"The character '") + c + L"' is not allowed in branch names.";
+        if (wcschr(L" ~^:?*[\\", c)) return std::wstring(L"The character '") + c + L"' is not allowed in " + what + L" names.";
     }
     for (size_t p = 0;;) {
         const size_t s = n.find(L'/', p);
         const std::wstring_view comp = std::wstring_view(n).substr(p, s == std::wstring::npos ? std::wstring::npos : s - p);
-        if (!comp.empty() && comp[0] == L'.') return L"No part of a branch name can start with '.'.";
-        if (comp.size() >= 5 && comp.substr(comp.size() - 5) == L".lock") return L"No part of a branch name can end with '.lock'.";
+        if (!comp.empty() && comp[0] == L'.') return L"No part of a " + what + L" name can start with '.'.";
+        if (comp.size() >= 5 && comp.substr(comp.size() - 5) == L".lock") return L"No part of a " + what + L" name can end with '.lock'.";
         if (s == std::wstring::npos) break;
         p = s + 1;
     }
     return L"";
 }
+
+std::wstring CheckBranchName(const std::wstring& n) { return CheckRefName(n, L"branch"); }
+std::wstring CheckTagName(const std::wstring& n) { return CheckRefName(n, L"tag"); }
 
 static std::wstring Git(const std::wstring& safeDir, std::wstring_view args);
 
@@ -551,6 +555,12 @@ void BuildLabels(RepoData& d) {
 
 // ============================================================================ repository
 
+int FindRef(const RepoData& d, RefKind kind, const std::wstring& name) {
+    for (size_t i = 0; i < d.refs.size(); ++i)
+        if (d.refs[i].kind == kind && d.refs[i].name == name) return (int)i;
+    return -1;
+}
+
 std::shared_ptr<RepoData> LoadRepository(const std::wstring& path, const std::wstring& safeDir, bool headOnly) {
     auto d = std::make_shared<RepoData>();
     const double t0 = NowMs();
@@ -898,9 +908,16 @@ std::shared_ptr<WorkStatus> LoadWorkStatus(const std::wstring& root, const std::
         }
         char X = t.size() > 2 ? t[2] : '.';
         char Y = t.size() > 3 ? t[3] : '.';
+        const bool submodule = t.size() > 5 && t[5] == 'S';  // "<XY> <sub>": N... for files, S<c><m><u> for submodules
         if (kind == 'u') { ws->unstaged.push_back({ L'U', path, L"" }); continue; }
-        if (X != '.') ws->staged.push_back({ (wchar_t)X, path, (X == 'R' || X == 'C') ? orig : std::wstring() });
-        if (Y != '.') ws->unstaged.push_back({ (wchar_t)Y, path, L"" });
+        if (X != '.') {
+            ws->staged.push_back({ (wchar_t)X, path, (X == 'R' || X == 'C') ? orig : std::wstring() });
+            ws->staged.back().submodule = submodule;
+        }
+        if (Y != '.') {
+            ws->unstaged.push_back({ (wchar_t)Y, path, L"" });
+            ws->unstaged.back().submodule = submodule;
+        }
     }
     // WIP counters (a path changed both in the index and the worktree counts once)
     std::unordered_map<std::wstring, int> kinds;  // 0 modified, 1 added, 2 deleted

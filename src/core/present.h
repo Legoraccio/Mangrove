@@ -34,6 +34,16 @@ Prompt DiscardPrompt(const FileChange& f);         // Discard / Cancel
 Prompt RevertPrompt(const RepoData& d, int32_t commit);  // Revert / Cancel
 Prompt DiscardPatchPrompt(const PatchJob& job, const std::wstring& path);  // Discard / Cancel
 Prompt RemoveAccountPrompt(const Account& a);      // Remove / Cancel
+// Delete / Cancel, before RepoSession::DeleteBranch (by name; empty for the branch that stays).
+Prompt DeleteBranchPrompt(const RepoSession& s, const std::wstring& local, const std::wstring& remote);
+
+// The "Delete" items of a branch's menu: the local branch, its remote one, or both (see RepoSession::PairOf).
+struct DeleteChoice {
+    std::wstring label;          // "Delete feature and origin/feature" (the apps add the ellipsis)
+    std::wstring local, remote;  // what goes, by name ("feature", "origin/feature"; empty: kept)
+    bool enabled = true;         // the branch checked out can't be deleted
+};
+std::vector<DeleteChoice> DeleteChoices(const RepoSession& s, int ref);  // empty for tags
 
 // Settings
 const std::vector<std::wstring>& PullModeLabels();  // by Settings::pullMode

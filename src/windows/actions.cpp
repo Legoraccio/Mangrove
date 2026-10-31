@@ -286,6 +286,14 @@ void App::DoDiscard(RepoTab& t, const FileChange& f) {
                });
 }
 
+void App::DoDeleteBranch(RepoTab& t, const std::wstring& local, const std::wstring& remote) {
+    if (!t.data || t.opBusy) return;
+    std::weak_ptr<RepoTab> wk = PtrOf(&t);
+    ShowDialog(DeleteBranchPrompt(t, local, remote), [wk, local, remote](int b) {
+                   if (auto tab = wk.lock(); tab && b == 0) tab->DeleteBranch(local, remote);
+               });
+}
+
 void App::DoRevert(RepoTab& t, int32_t commit) {
     const std::wstring why = t.CanRevert(commit);
     if (!why.empty()) {
@@ -324,12 +332,13 @@ void App::ToggleAmend(RepoTab& t) {
     Invalidate();
 }
 
-// ============================================================================ new branch (inline input)
+// ============================================================================ new branch or tag (inline input)
 
-void App::BeginBranchInput(RepoTab& t, int32_t commit) {
+void App::BeginBranchInput(RepoTab& t, int32_t commit, bool tag) {
     if (!t.data || !t.graph || t.opBusy || t.data->commits.empty()) return;
     inlineInput = InlineInput{};
     inlineInput.active = true;
+    inlineInput.tag = tag;
     inlineInput.tab = PtrOf(&t);
     inlineInput.commit = commit;
     searchFocus = false;
@@ -355,7 +364,8 @@ void App::CommitBranchInput() {
         CancelBranchInput();
         return;
     }
-    const std::wstring err = t->CreateBranch(inlineInput.edit.text, inlineInput.commit);
+    const std::wstring err = inlineInput.tag ? t->CreateTag(inlineInput.edit.text, inlineInput.commit)
+                                             : t->CreateBranch(inlineInput.edit.text, inlineInput.commit);
     if (!err.empty()) {
         inlineInput.error = err;
         Invalidate();

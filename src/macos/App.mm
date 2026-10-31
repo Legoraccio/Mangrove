@@ -42,11 +42,15 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
 
 @implementation MGAppDelegate {
     NSMutableArray<MGRepoWindowController*>* _windows;
+    NSMutableArray<MGRepoWindowController*>* _closing;  // closed a moment ago (see windowClosed:)
     NSMenu* _recent;
 }
 
 - (instancetype)init {
-    if ((self = [super init])) _windows = [NSMutableArray array];
+    if ((self = [super init])) {
+        _windows = [NSMutableArray array];
+        _closing = [NSMutableArray array];
+    }
     return self;
 }
 
@@ -61,14 +65,20 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
     std::thread([] { GitVersion(); }).detach();  // the first git call is the slow one
     [self restoreTabs];
     if (!EnvVar("MANGROVE_SNAPSHOT").empty()) [self snapshotStep:0 tries:0];
+    if (!EnvVar("MANGROVE_TABTEST").empty())
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self tabTestStep:0];
+        });
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)app {
     return NO;
 }
 
+// The Dock icon with no window open: the repositories of the last window closed come back, as at launch.
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)app hasVisibleWindows:(BOOL)visible {
-    if (!visible && _windows.count == 0) [self newWindow:nil];
+    [self settleClosedWindows];
+    if (!visible && _windows.count == 0) [self restoreTabs];
     return YES;
 }
 
@@ -77,6 +87,7 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
 }
 
 - (void)applicationWillTerminate:(NSNotification*)note {
+    [self settleClosedWindows];
     [self saveSettings];
 }
 
@@ -132,6 +143,7 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
 - (MGRepoWindowController*)controllerFor:(NSString*)path {
     const std::wstring p = NormalizePath(WS(path.stringByStandardizingPath));
     for (MGRepoWindowController* c in _windows) {
+        if ([_closing containsObject:c]) continue;
         const RepoSession* s = c.session;
         if (s && (s->path == p || (s->data && s->data->root == p))) return c;
     }
@@ -154,16 +166,30 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
     [c.window makeKeyAndOrderFront:nil];
 }
 
+// The close button closes a window with all its tabs, one after the other. Once they all did, the closed ones are
+// forgotten while other windows stay open; when none is left, the tabs to reopen stay as they were: closing the last
+// window keeps the session, as quitting does (and as closing the window does on Windows and Linux).
 - (void)windowClosed:(MGRepoWindowController*)controller {
-    // Later: the controller is still running the close.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self->_windows removeObject:controller];
-        [self saveSettings];
+    [_closing addObject:controller];
+    if (_closing.count > 1) return;  // already on its way
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self settleClosedWindows];
     });
+}
+
+- (void)settleClosedWindows {
+    if (!_closing.count) return;
+    [_windows removeObjectsInArray:_closing];
+    [_closing removeAllObjects];
+    [self saveSettings];
 }
 
 - (void)saveSettings {
     Settings& s = AppSettings();
+    if (_closing.count || !_windows.count) {  // windows closing, or none left: the tabs to reopen stay
+        s.Save();
+        return;
+    }
     s.tabs.clear();
     s.activeTab = 0;
     NSWindow* key = NSApp.keyWindow ? NSApp.keyWindow : NSApp.mainWindow;
@@ -183,6 +209,42 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
     }
     for (MGRepoWindowController* c in _windows) add(c.window);  // minimized windows
     s.Save();
+}
+
+// ---- the tabs of the previous session (test)
+
+// MANGROVE_TABTEST: the repositories saved as tabs reopen in one window; its close button closes them and they stay
+// saved; the Dock icon brings them back. Each step is logged ("tabtest: ..."), then the app quits, and
+// tools/uitest/mac-tabs.sh checks the log and the settings file.
+- (int)openRepositories {
+    int n = 0;
+    for (MGRepoWindowController* c in _windows) n += c.session && ![_closing containsObject:c];
+    return n;
+}
+
+- (void)tabTestStep:(int)step {
+    void (^after)(int) = ^(int next) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self tabTestStep:next];
+        });
+    };
+    switch (step) {
+    case 0: {
+        NSWindow* w = _windows.firstObject.window;
+        NSLog(@"tabtest: restored %d repositories in %lu tabs", [self openRepositories], (unsigned long)std::max<NSUInteger>(1, w.tabbedWindows.count));
+        [[w standardWindowButton:NSWindowCloseButton] performClick:nil];
+        after(1);
+        return;
+    }
+    case 1:
+        NSLog(@"tabtest: after the close button %d repositories are open, %d saved", [self openRepositories], (int)AppSettings().tabs.size());
+        [self applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];  // the Dock icon
+        after(2);
+        return;
+    default:
+        NSLog(@"tabtest: reopened %d repositories", [self openRepositories]);
+        [NSApp terminate:nil];
+    }
 }
 
 // ---- UI snapshots

@@ -39,6 +39,8 @@ jobs:
         with:
           name: mac-snapshots
           path: build/snapshots
+      - name: Tabs of the previous session
+        run: ./tools/uitest/mac-tabs.sh
 
   windows:
     name: Windows

@@ -71,6 +71,9 @@ struct FileChange {
     wchar_t status = L'M';  // M A D R C T U ?
     std::wstring path, oldPath;
     int32_t added = -1, deleted = -1;  // changed lines (commit files; -1 = unknown or binary)
+    bool submodule = false;            // a submodule: the commit it has checked out changed, or its folder is missing
+    // A repository of its own inside the working tree that this one doesn't track: git lists it as "name/".
+    bool NestedRepository() const { return status == L'?' && !path.empty() && path.back() == L'/'; }
 };
 
 // Lines a commit adds and removes (against its first parent).
@@ -201,6 +204,8 @@ struct RepoData {
     const int32_t* Parents(const Commit& c) const { return parents.data() + c.parentOff; }
 };
 
+int FindRef(const RepoData& d, RefKind kind, const std::wstring& name);  // index in d.refs, -1 when there is none
+
 // headOnly: only the commits reachable from HEAD (plus stashes), instead of every branch and tag.
 std::shared_ptr<RepoData> LoadRepository(const std::wstring& path, const std::wstring& safeDir, bool headOnly = false);
 // Added and removed lines of each commit (merges are not asked for: they would count a whole branch).
@@ -229,6 +234,7 @@ GitOpResult RunGitOp(const std::wstring& root, const std::wstring& safeDir, cons
                      const std::function<void(const std::string&)>& progress = nullptr, const std::vector<std::string>& env = {});
 std::wstring GitErrorText(const GitOpResult& r);         // readable summary of git's error output
 std::wstring CheckBranchName(const std::wstring& name);  // empty when valid (git check-ref-format rules)
+std::wstring CheckTagName(const std::wstring& name);     // the same rules, said of a tag
 std::wstring ReadHeadMessage(const std::wstring& root, const std::wstring& safeDir);  // full message of HEAD, as written
 // Diff of one file: of a commit against its first parent, of the working tree, or of the index.
 std::shared_ptr<FileDiff> LoadFileDiff(const std::wstring& root, const std::wstring& safeDir, const DiffRequest& req);

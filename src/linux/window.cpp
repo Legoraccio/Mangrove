@@ -510,26 +510,29 @@ static void NoSpaces(GtkEditable* e, const char* text, int length, int* position
     g_signal_stop_emission_by_name(e, "insert-text");
 }
 
-// Asks for the name of a new branch, checking it while it is typed.
-void RepoTab::NewBranchAt(int32_t commit) {
+void RepoTab::NewBranchAt(int32_t commit) { NewRefAt(commit, false); }
+void RepoTab::NewTagAt(int32_t commit) { NewRefAt(commit, true); }
+
+// Asks for the name of a new branch or tag, checking it while it is typed.
+void RepoTab::NewRefAt(int32_t commit, bool tag) {
     RepoSession* s = sess.get();
     if (!s || !s->data || !s->CanRun(ActBranch, nullptr)) return;
     const RepoData& d = *s->data;
     const int32_t at = commit >= 0 ? commit : d.headCommit;
-    const std::string where = at >= 0 && at < (int32_t)d.commits.size()
-                                  ? "The branch starts at " + U8(d.commits[(size_t)at].id.Hex(7)) + " \u201C" + U8(CommitSubject(d, d.commits[(size_t)at])) +
-                                        "\u201D and is checked out."
-                                  : "The branch is checked out.";
-    AdwDialog* dlg = adw_alert_dialog_new("New Branch", where.c_str());
+    const bool known = at >= 0 && at < (int32_t)d.commits.size();
+    if (tag && !known) return;
+    const std::string what = known ? U8(d.commits[(size_t)at].id.Hex(7)) + " \u201C" + U8(CommitSubject(d, d.commits[(size_t)at])) + "\u201D" : "";
+    const std::string where = tag ? "The tag marks " + what + "." : known ? "The branch starts at " + what + " and is checked out." : "The branch is checked out.";
+    AdwDialog* dlg = adw_alert_dialog_new(tag ? "New Tag" : "New Branch", where.c_str());
     AdwAlertDialog* a = ADW_ALERT_DIALOG(dlg);
-    adw_alert_dialog_add_responses(a, "cancel", "Cancel", "create", "Create Branch", nullptr);
+    adw_alert_dialog_add_responses(a, "cancel", "Cancel", "create", tag ? "Create Tag" : "Create Branch", nullptr);
     adw_alert_dialog_set_response_appearance(a, "create", ADW_RESPONSE_SUGGESTED);
     adw_alert_dialog_set_default_response(a, "create");
     adw_alert_dialog_set_close_response(a, "cancel");
     adw_alert_dialog_set_response_enabled(a, "create", FALSE);
     GtkWidget* box = VBox(6);
     GtkWidget* entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "feature/name");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), tag ? "v1.0" : "feature/name");
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
     GtkWidget* error = MakeLabel("", "caption error");
     gtk_label_set_wrap(GTK_LABEL(error), TRUE);
@@ -542,11 +545,12 @@ void RepoTab::NewBranchAt(int32_t commit) {
         std::weak_ptr<bool> alive;
         RepoTab* tab;
         int32_t commit;
+        bool tag;
         GtkWidget* entry;
         GtkWidget* error;
         AdwAlertDialog* dialog;
     };
-    State* st = new State{ sess, alive, this, commit, entry, error, a };
+    State* st = new State{ sess, alive, this, commit, tag, entry, error, a };
     g_object_set_data_full(G_OBJECT(dlg), "mg-state", st, [](gpointer p) { delete static_cast<State*>(p); });
     // spaces become dashes as they are typed, as git would refuse them
     g_signal_connect(gtk_editable_get_delegate(GTK_EDITABLE(entry)), "insert-text", G_CALLBACK(NoSpaces), nullptr);
@@ -554,7 +558,7 @@ void RepoTab::NewBranchAt(int32_t commit) {
         State* st = static_cast<State*>(data);
         std::shared_ptr<RepoSession> s = st->session.lock();
         const std::wstring name = Widen(gtk_editable_get_text(e));
-        const std::wstring err = name.empty() || !s ? std::wstring() : s->CheckNewBranch(name);
+        const std::wstring err = name.empty() || !s ? std::wstring() : st->tag ? s->CheckNewTag(name) : s->CheckNewBranch(name);
         gtk_label_set_text(GTK_LABEL(st->error), U8(err).c_str());
         gtk_widget_set_visible(st->error, !err.empty());
         adw_alert_dialog_set_response_enabled(st->dialog, "create", !name.empty() && err.empty());
@@ -565,8 +569,9 @@ void RepoTab::NewBranchAt(int32_t commit) {
         if (!st || strcmp(response, "create") != 0) return;
         std::shared_ptr<RepoSession> s = st->session.lock();
         if (!s) return;
-        const std::wstring err = s->CreateBranch(Widen(gtk_editable_get_text(GTK_EDITABLE(st->entry))), st->commit);
-        if (!err.empty() && st->alive.lock()) st->tab->Notify(L"Couldn't create the branch", err, true);
+        const std::wstring name = Widen(gtk_editable_get_text(GTK_EDITABLE(st->entry)));
+        const std::wstring err = st->tag ? s->CreateTag(name, st->commit) : s->CreateBranch(name, st->commit);
+        if (!err.empty() && st->alive.lock()) st->tab->Notify(st->tag ? L"Couldn't create the tag" : L"Couldn't create the branch", err, true);
     }), nullptr);
     adw_dialog_present(dlg, Toplevel());
     adw_dialog_set_focus(dlg, entry);
@@ -584,6 +589,16 @@ void RepoTab::RevertCommit(int32_t commit) {
     RunPrompt(Toplevel(), RevertPrompt(*s->data, commit), [wk, commit](int b) {
         std::shared_ptr<RepoSession> session = wk.lock();
         if (session && b == 0) session->Revert(commit);
+    });
+}
+
+void RepoTab::DeleteBranch(const std::wstring& local, const std::wstring& remote) {
+    RepoSession* s = sess.get();
+    if (!s || !s->data || s->opBusy) return;
+    std::weak_ptr<RepoSession> wk = sess;
+    RunPrompt(Toplevel(), DeleteBranchPrompt(*s, local, remote), [wk, local, remote](int b) {
+        std::shared_ptr<RepoSession> session = wk.lock();
+        if (session && b == 0) session->DeleteBranch(local, remote);
     });
 }
 
@@ -711,6 +726,7 @@ void RepoTab::FillCommitMenu(Menu& m, int32_t c) {
     }
     const bool stash = cm.flags & CF_STASH;
     m.Add("New Branch Here\u2026", safe([](RepoTab* t, int commit) { t->NewBranchAt(commit); }, c), !busy);
+    m.Add("New Tag Here\u2026", safe([](RepoTab* t, int commit) { t->NewTagAt(commit); }, c), !busy && !stash);
     m.Add("Check Out This Commit (Detached HEAD)", safe([](RepoTab* t, int commit) { t->sess->CheckoutCommit(commit); }, c), !busy && !stash);
     m.Add("Revert This Commit\u2026", safe([](RepoTab* t, int commit) { t->RevertCommit(commit); }, c), !busy && !stash && !d.unborn);
     m.Section();
@@ -745,6 +761,17 @@ void RepoTab::FillRefMenu(Menu& m, int ri) {
     m.Add("New Branch Here\u2026", [this, a, at] {
         if (a.lock()) NewBranchAt(at);
     }, !busy && at >= 0);
+    m.Add("New Tag Here\u2026", [this, a, at] {
+        if (a.lock()) NewTagAt(at);
+    }, !busy && at >= 0);
+    const std::vector<DeleteChoice> deletes = DeleteChoices(*s, ri);  // the branch here, the remote one, both
+    if (!deletes.empty()) m.Section();
+    for (const DeleteChoice& dc : deletes) {
+        const std::wstring local = dc.local, remote = dc.remote;
+        m.Add(U8(dc.label) + "\u2026", [this, a, local, remote] {
+            if (a.lock()) DeleteBranch(local, remote);
+        }, !busy && dc.enabled);
+    }
     m.Section();
     const std::string name = U8(r.name);
     m.Add(r.kind == RefKind::Tag ? "Copy Tag Name" : "Copy Branch Name", [this, a, name] {

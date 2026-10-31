@@ -272,24 +272,26 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
 
 @end
 
-// ---------------------------------------------------------------- new branch
+// ---------------------------------------------------------------- new branch or tag
 
-// Asks for the name of a new branch, checking it while it is typed.
+// Asks for the name of a new branch or tag, checking it while it is typed.
 @interface MGBranchPrompt : NSObject <NSTextFieldDelegate>
 @end
 
 @implementation MGBranchPrompt {
     std::weak_ptr<RepoSession> _session;
     int32_t _commit;
+    BOOL _tag;
     NSAlert* _alert;
     NSTextField* _field;
     NSTextField* _error;
 }
 
-- (instancetype)initWithSession:(const std::shared_ptr<RepoSession>&)session commit:(int32_t)commit {
+- (instancetype)initWithSession:(const std::shared_ptr<RepoSession>&)session commit:(int32_t)commit tag:(BOOL)tag {
     if ((self = [super init])) {
         _session = session;
         _commit = commit;
+        _tag = tag;
     }
     return self;
 }
@@ -299,17 +301,19 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     if (!s || !s->data) return;
     const RepoData& d = *s->data;
     const int32_t at = _commit >= 0 ? _commit : d.headCommit;
-    NSString* where = at >= 0 && at < (int32_t)d.commits.size()
-                          ? [NSString stringWithFormat:@"The branch starts at %@ “%@” and is checked out.", NS(d.commits[(size_t)at].id.Hex(7)),
-                                                       NS(CommitSubject(d, d.commits[(size_t)at]))]
-                          : @"The branch is checked out.";
+    const bool known = at >= 0 && at < (int32_t)d.commits.size();
+    if (_tag && !known) return;
+    NSString* what = known ? [NSString stringWithFormat:@"%@ “%@”", NS(d.commits[(size_t)at].id.Hex(7)), NS(CommitSubject(d, d.commits[(size_t)at]))] : @"";
+    NSString* where = _tag    ? [NSString stringWithFormat:@"The tag marks %@.", what]
+                      : known ? [NSString stringWithFormat:@"The branch starts at %@ and is checked out.", what]
+                              : @"The branch is checked out.";
     _alert = [[NSAlert alloc] init];
-    _alert.messageText = @"New Branch";
+    _alert.messageText = _tag ? @"New Tag" : @"New Branch";
     _alert.informativeText = where;
-    [_alert addButtonWithTitle:@"Create Branch"];
+    [_alert addButtonWithTitle:_tag ? @"Create Tag" : @"Create Branch"];
     [_alert addButtonWithTitle:@"Cancel"];
     _field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 22, 300, 24)];
-    _field.placeholderString = @"feature/name";
+    _field.placeholderString = _tag ? @"v1.0" : @"feature/name";
     _field.delegate = self;
     _error = MakeLabel(@"", [NSFont systemFontOfSize:11], NSColor.systemRedColor);
     _error.frame = NSMakeRect(0, 0, 300, 16);
@@ -326,7 +330,8 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
                        if (r != NSAlertFirstButtonReturn) return;
                        std::shared_ptr<RepoSession> session = keep->_session.lock();
                        if (!session) return;
-                       const std::wstring err = session->CreateBranch(WS(keep->_field.stringValue), keep->_commit);
+                       const std::wstring name = WS(keep->_field.stringValue);
+                       const std::wstring err = keep->_tag ? session->CreateTag(name, keep->_commit) : session->CreateBranch(name, keep->_commit);
                        if (!err.empty() && done) done(NS(err));
                    }];
 }
@@ -336,7 +341,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     if ([v containsString:@" "]) _field.stringValue = [v stringByReplacingOccurrencesOfString:@" " withString:@"-"];  // as git would refuse spaces
     std::shared_ptr<RepoSession> s = _session.lock();
     const std::wstring name = WS(_field.stringValue);
-    const std::wstring err = name.empty() || !s ? std::wstring() : s->CheckNewBranch(name);
+    const std::wstring err = name.empty() || !s ? std::wstring() : _tag ? s->CheckNewTag(name) : s->CheckNewBranch(name);
     _error.stringValue = NS(err);
     _alert.buttons[0].enabled = !name.empty() && err.empty();
 }
@@ -645,14 +650,29 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     else s->CheckoutCommit(commit);
 }
 
-- (void)newBranchAt:(int32_t)commit {
+- (void)newRefAt:(int32_t)commit tag:(BOOL)tag {
     RepoSession* s = _session.get();
     if (!s || !s->CanRun(ActBranch, nullptr)) return;
     __weak MGCenterController* center = _center;
-    [[[MGBranchPrompt alloc] initWithSession:_session commit:commit] runInWindow:self.window
-                                                                            done:^(NSString* error) {
-                                                                                [center.banner showTitle:@"Couldn't create the branch" message:error error:YES];
-                                                                            }];
+    NSString* title = tag ? @"Couldn't create the tag" : @"Couldn't create the branch";
+    [[[MGBranchPrompt alloc] initWithSession:_session commit:commit tag:tag] runInWindow:self.window
+                                                                                    done:^(NSString* error) {
+                                                                                        [center.banner showTitle:title message:error error:YES];
+                                                                                    }];
+}
+
+- (void)newBranchAt:(int32_t)commit { [self newRefAt:commit tag:NO]; }
+- (void)newTagAt:(int32_t)commit { [self newRefAt:commit tag:YES]; }
+
+- (void)deleteBranch:(const std::wstring&)local remote:(const std::wstring&)remote {
+    RepoSession* s = _session.get();
+    if (!s || !s->data || s->opBusy) return;
+    std::weak_ptr<RepoSession> wk = _session;
+    const std::wstring l = local, r = remote;
+    RunPrompt(self.window, DeleteBranchPrompt(*s, l, r), ^(int b) {
+        std::shared_ptr<RepoSession> session = wk.lock();
+        if (session && b == 0) session->DeleteBranch(l, r);
+    });
 }
 
 - (void)revertCommit:(int32_t)commit {
@@ -767,6 +787,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     }
     const bool stash = cm.flags & CF_STASH;
     [self add:m title:@"New Branch Here…" action:@selector(menuNewBranch:) tag:c enabled:!busy];
+    [self add:m title:@"New Tag Here…" action:@selector(menuNewTag:) tag:c enabled:!busy && !stash];
     [self add:m title:@"Check Out This Commit (Detached HEAD)" action:@selector(menuCheckoutDetached:) tag:c enabled:!busy && !stash];
     [self add:m title:@"Revert This Commit…" action:@selector(menuRevert:) tag:c enabled:!busy && !stash && !d.unborn];
     [m addItem:NSMenuItem.separatorItem];
@@ -798,6 +819,13 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     }
     [self add:m title:checkout action:@selector(menuCheckoutRef:) tag:ri enabled:!busy && !r.head];
     [self add:m title:@"New Branch Here…" action:@selector(menuNewBranch:) tag:r.commit enabled:!busy && r.commit >= 0];
+    [self add:m title:@"New Tag Here…" action:@selector(menuNewTag:) tag:r.commit enabled:!busy && r.commit >= 0];
+    const std::vector<DeleteChoice> deletes = DeleteChoices(*s, ri);  // the branch here, the remote one, both
+    if (!deletes.empty()) [m addItem:NSMenuItem.separatorItem];
+    for (const DeleteChoice& dc : deletes) {
+        NSMenuItem* del = [self add:m title:[NS(dc.label) stringByAppendingString:@"…"] action:@selector(menuDeleteBranch:) tag:0 enabled:!busy && dc.enabled];
+        del.representedObject = @[ NS(dc.local), NS(dc.remote) ];
+    }
     [m addItem:NSMenuItem.separatorItem];
     NSString* copyTitle = r.kind == RefKind::Tag ? @"Copy Tag Name" : @"Copy Branch Name";
     NSMenuItem* copyItem = [self add:m title:copyTitle action:@selector(menuCopyText:) tag:0 enabled:YES];
@@ -818,6 +846,11 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
 
 - (void)menuReview:(NSMenuItem*)i { [self reviewChanges]; }
 - (void)menuNewBranch:(NSMenuItem*)i { [self newBranchAt:(int32_t)i.tag]; }
+- (void)menuNewTag:(NSMenuItem*)i { [self newTagAt:(int32_t)i.tag]; }
+- (void)menuDeleteBranch:(NSMenuItem*)i {
+    NSArray<NSString*>* names = i.representedObject;  // the local branch and the remote one, "" for the one kept
+    [self deleteBranch:WS(names[0]) remote:WS(names[1])];
+}
 - (void)menuCheckoutRef:(NSMenuItem*)i { [self checkoutRef:(int)i.tag]; }
 - (void)menuCheckoutDetached:(NSMenuItem*)i {
     if (_session) _session->CheckoutCommit((int32_t)i.tag);

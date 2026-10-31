@@ -407,8 +407,12 @@ static void OnPressed(GtkGestureClick* g, int n, double x, double y, gpointer da
     RepoTab* owner = v->owner;
     if (button == GDK_BUTTON_SECONDARY) {
         owner->SelectRow(row);
+        // On the branch or tag chips: the menu of the branch or tag shown; elsewhere the commit's.
+        const int32_t c = s->graph->rows[(size_t)row].commit;
+        const auto it = c >= 0 && x <= v->refsW ? s->data->labels.find(c) : s->data->labels.end();
         Menu m;
-        owner->FillCommitMenu(m, s->graph->rows[(size_t)row].commit);
+        if (it != s->data->labels.end() && !it->second.empty()) owner->FillRefMenu(m, it->second[0].ref);
+        else owner->FillCommitMenu(m, c);
         m.PopupAt(v->widget, x, y);
         return;
     }

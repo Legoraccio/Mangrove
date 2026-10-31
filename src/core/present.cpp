@@ -139,8 +139,15 @@ Prompt DropStashPrompt(const StashEntry& s) {
 Prompt DiscardPrompt(const FileChange& f) {
     Prompt p;
     p.title = L"Discard changes?";
-    p.message = f.status == L'?' ? L"“" + f.path + L"” is not tracked by Git, so it will be deleted from the disk. This can't be undone."
-                                 : L"Your unstaged changes to “" + f.path + L"” will be lost. This can't be undone.";
+    if (f.submodule)
+        p.message = L"The submodule “" + f.path + L"” checks out the commit this repository records for it again. The changes inside "
+                    L"it are kept: if they are in the way, nothing changes.";
+    else if (f.NestedRepository())
+        p.message = L"“" + f.path.substr(0, f.path.size() - 1) + L"” is a Git repository of its own that this one doesn't track: it "
+                    L"will be deleted from the disk, with its history. This can't be undone.";
+    else
+        p.message = f.status == L'?' ? L"“" + f.path + L"” is not tracked by Git, so it will be deleted from the disk. This can't be undone."
+                                     : L"Your unstaged changes to “" + f.path + L"” will be lost. This can't be undone.";
     p.buttons = { L"Discard", L"Cancel" };
     p.defaultButton = 1;
     p.danger = 0;
@@ -156,6 +163,57 @@ Prompt RevertPrompt(const RepoData& d, int32_t commit) {
                 (c.parentCount > 1 ? L"\n\nThis is a merge: the changes it brought in from the merged branch are undone." : L"");
     p.buttons = { L"Revert", L"Cancel" };
     return p;
+}
+
+static const Ref* RefOf(const RepoData& d, int i, RefKind kind) {
+    return i >= 0 && i < (int)d.refs.size() && d.refs[(size_t)i].kind == kind ? &d.refs[(size_t)i] : nullptr;
+}
+
+Prompt DeleteBranchPrompt(const RepoSession& s, const std::wstring& localName, const std::wstring& remoteName) {
+    Prompt p;
+    p.buttons = { L"Delete", L"Cancel" };
+    p.defaultButton = 1;
+    p.danger = 0;
+    if (!s.data) return p;
+    const RepoData& d = *s.data;
+    const int local = localName.empty() ? -1 : FindRef(d, RefKind::Local, localName);
+    const int remote = remoteName.empty() ? -1 : FindRef(d, RefKind::Remote, remoteName);
+    const Ref* loc = RefOf(d, local, RefKind::Local);
+    const Ref* rem = RefOf(d, remote, RefKind::Remote);
+    std::vector<int> going;
+    if (loc) going.push_back(local);
+    if (rem) going.push_back(remote);
+    if (loc && rem) {
+        p.title = L"Delete “" + loc->name + L"” and “" + rem->name + L"”?";
+        p.message = L"The local branch is deleted, and the branch on " + rem->remote + L" too, for everyone who uses that remote.";
+    } else if (loc) {
+        p.title = L"Delete the branch “" + loc->name + L"”?";
+        const Ref* stays = RefOf(d, s.PairOf(local).remote, RefKind::Remote);
+        p.message = stays ? L"The local branch is deleted; " + stays->name + L" stays on the remote." : std::wstring(L"The local branch is deleted.");
+    } else if (rem) {
+        p.title = L"Delete the branch “" + rem->name + L"”?";
+        p.message = L"“" + rem->branch + L"” is deleted from " + rem->remote + L", for everyone who uses that remote.";
+        if (const Ref* stays = RefOf(d, s.PairOf(remote).local, RefKind::Local)) p.message += L" Your local branch " + stays->name + L" stays.";
+    }
+    const int32_t only = s.CommitsOnlyOn(going);
+    const std::wstring commits = only == 1 ? std::wstring(L"1 commit is") : FormatCount((size_t)std::max(0, only)) + L" commits are";
+    if (only > 0 && !rem) p.message += L"\n\n" + commits + L" on no other branch or tag: Undo brings the branch back.";
+    else if (only > 0) p.message += L"\n\n" + commits + L" on no other branch or tag: " + (only == 1 ? L"it" : L"they") + L" will be lost. This can't be undone.";
+    else if (rem) p.message += L" This can't be undone.";
+    return p;
+}
+
+std::vector<DeleteChoice> DeleteChoices(const RepoSession& s, int ref) {
+    std::vector<DeleteChoice> out;
+    if (!s.data) return out;
+    const RepoData& d = *s.data;
+    const BranchPair pair = s.PairOf(ref);
+    const Ref* loc = RefOf(d, pair.local, RefKind::Local);
+    const Ref* rem = RefOf(d, pair.remote, RefKind::Remote);
+    if (loc) out.push_back({ L"Delete " + loc->name, loc->name, L"", !loc->head });
+    if (rem) out.push_back({ L"Delete " + rem->name, L"", rem->name, true });
+    if (loc && rem) out.push_back({ L"Delete " + loc->name + L" and " + rem->name, loc->name, rem->name, !loc->head });
+    return out;
 }
 
 Prompt RemoveAccountPrompt(const Account& a) {

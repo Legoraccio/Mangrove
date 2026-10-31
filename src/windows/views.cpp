@@ -1102,7 +1102,7 @@ void App::PaintRefPopup(RepoTab& t) {
 void App::PaintInlineInput(RepoTab&, const RectF& box) {
     inlineInput.rect = box;
     TextBoxFrame(gfx, box, true, !inlineInput.error.empty());
-    PaintEdit(inlineInput.edit, box.Inset(DR(10), 0), F::UI, L"New branch name", true);
+    PaintEdit(inlineInput.edit, box.Inset(DR(10), 0), F::UI, inlineInput.tag ? L"New tag name" : L"New branch name", true);
     AddZone(box, Hit::InlineEdit);
 }
 
