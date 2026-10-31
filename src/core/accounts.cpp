@@ -8,19 +8,26 @@
 namespace {
 
 const std::vector<ForgeInfo> kForges = {
-    { Forge::GitHub, L"GitHub", L"https://github.com",
+    { Forge::GitHub, L"GitHub", L"https://github.com", L"Change it for GitHub Enterprise Server.",
       L"A classic token with the repo scope (and workflow, to push workflow files), or a fine-grained token with "
       L"read and write access to the contents of the repositories." },
-    { Forge::GitLab, L"GitLab", L"https://gitlab.com",
-      L"A personal access token with the read_user, read_repository and write_repository scopes." },
-    { Forge::Gitea, L"Gitea / Forgejo", L"https://codeberg.org",
+    { Forge::GitLab, L"GitLab", L"https://gitlab.com", L"Change it for a self-managed GitLab server.",
+      L"A personal access token with the read_user, read_api (to list your projects), read_repository and write_repository scopes." },
+    { Forge::Gitea, L"Gitea / Forgejo", L"https://codeberg.org", L"Codeberg, or the address of another Gitea or Forgejo server.",
       L"An access token with read and write permission on repositories and read permission on the user." },
+    { Forge::Bitbucket, L"Bitbucket", L"https://bitbucket.org", L"Bitbucket Cloud.",
+      L"An Atlassian API token with scopes, for Bitbucket: read:user, read:workspace and read:repository, and write:repository "
+      L"to push." },
+    { Forge::AzureDevOps, L"Azure DevOps", L"https://dev.azure.com/", L"The address of your organization: https://dev.azure.com/ and its name.",
+      L"A personal access token of the organization with the Code scope, read and write." },
 };
 
 const wchar_t* ForgeId(Forge f) {
     switch (f) {
     case Forge::GitLab: return L"gitlab";
     case Forge::Gitea: return L"gitea";
+    case Forge::Bitbucket: return L"bitbucket";
+    case Forge::AzureDevOps: return L"azure";
     default: return L"github";
     }
 }
@@ -38,6 +45,8 @@ bool ForgeFromId(std::wstring_view id, Forge& f) {
 std::mutex g_tokensMutex;
 std::unordered_map<std::wstring, std::string> g_tokens;
 
+bool RenewToken(const Account& a, StoredToken& t);
+
 bool TokenOf(const Account& a, std::string& token) {
     std::lock_guard<std::mutex> lk(g_tokensMutex);
     const std::wstring key = a.Key();
@@ -47,7 +56,13 @@ bool TokenOf(const Account& a, std::string& token) {
         if (!SecretLoad(key, t)) t.clear();
         it = g_tokens.emplace(key, std::move(t)).first;
     }
-    token = it->second;
+    // A token that expires is renewed a few minutes before, and the new one kept.
+    StoredToken t = StoredToken::Read(it->second);
+    if (t.expires && UnixNow() > t.expires - 300 && !t.refresh.empty() && RenewToken(a, t)) {
+        it->second = t.Text();
+        SecretSave(key, it->second, std::wstring(L"Mangrove: ") + InfoOf(a.forge).name + L" token of " + a.login + L" on " + a.Host());
+    }
+    token = t.access;
     return !token.empty();
 }
 
@@ -102,6 +117,29 @@ public:
             }
             Space();
             if (!Eat(',')) return {};
+        }
+    }
+
+    // The elements of the array the text is, as written (read each one with a Json of its own).
+    std::vector<std::string_view> Elements() {
+        std::vector<std::string_view> out;
+        p = 0;
+        Space();
+        if (!Eat('[')) return out;
+        Space();
+        if (Eat(']')) return out;
+        for (;;) {
+            Space();
+            const size_t from = p;
+            if (p < s.size() && s[p] == '"') {
+                std::string ignored;
+                if (!String(ignored)) return out;
+            } else if (!Skip()) {
+                return out;
+            }
+            out.push_back(TrimSv(s.substr(from, p - from)));
+            Space();
+            if (Eat(']') || !Eat(',')) return out;
         }
     }
 
@@ -190,18 +228,25 @@ std::wstring Lower(std::wstring s) {
     return s;
 }
 
-// Mangrove's OAuth app on github.com: Device Flow on, user tokens that don't expire (Mangrove doesn't renew them),
-// see the README. The device flow needs no client secret, and a client ID is public. Empty: no signing in with the
-// browser.
+// Mangrove's OAuth apps, see the README. On github.com: Device Flow on, user tokens that don't expire. On gitlab.com:
+// not confidential, with the device authorization grant; its tokens expire after two hours and Mangrove renews them.
+// The device flow needs no client secret, and a client ID is public. Empty: no signing in with the browser.
 constexpr char kGitHubClientId[] = "Ov23li3hoJcbPe6kwo7l";
+constexpr char kGitLabClientId[] = "";
 
-// The client ID in use: MANGROVE_GITHUB_CLIENT_ID (another OAuth app, to try it) or Mangrove's.
-const std::string& GitHubClientId() {
-    static const std::string id = [] {
+// The client ID in use: MANGROVE_GITHUB_CLIENT_ID or MANGROVE_GITLAB_CLIENT_ID (another OAuth app, to try it), or
+// Mangrove's.
+const std::string& ClientId(Forge f) {
+    static const std::string github = [] {
         const std::wstring env = EnvVar("MANGROVE_GITHUB_CLIENT_ID");
         return env.empty() ? std::string(kGitHubClientId) : Narrow(env);
     }();
-    return id;
+    static const std::string gitlab = [] {
+        const std::wstring env = EnvVar("MANGROVE_GITLAB_CLIENT_ID");
+        return env.empty() ? std::string(kGitLabClientId) : Narrow(env);
+    }();
+    static const std::string none;
+    return f == Forge::GitHub ? github : f == Forge::GitLab ? gitlab : none;
 }
 
 std::string FormEncode(std::string_view s) {
@@ -227,14 +272,80 @@ int ToInt(const std::string& s, int def) {
 }
 
 // What the service's OAuth error codes mean for the user.
-std::wstring SignInError(int status, const std::string& code, const std::string& description) {
-    if (code == "device_flow_disabled") return L"Signing in with the browser isn't enabled for Mangrove's GitHub app.";
+std::wstring SignInError(int status, const std::string& code, const std::string& description, const std::wstring& service) {
+    if (code == "device_flow_disabled") return L"Signing in with the browser isn't enabled for Mangrove's " + service + L" app.";
     if (code == "incorrect_client_credentials" || code == "unauthorized_client" || code == "invalid_client")
-        return L"GitHub doesn't know Mangrove's app: use a token instead.";
-    if (code == "incorrect_device_code" || code == "bad_verification_code") return L"GitHub didn't recognize the code: start again.";
+        return service + L" doesn't know Mangrove's app: use a token instead.";
+    if (code == "incorrect_device_code" || code == "bad_verification_code") return service + L" didn't recognize the code: start again.";
     if (!code.empty())
-        return L"GitHub refused the sign-in (" + Widen(code) + L")" + (description.empty() ? L"." : L": " + Widen(description));
-    return L"GitHub answered with error " + std::to_wstring(status) + L".";
+        return service + L" refused the sign-in (" + Widen(code) + L")" + (description.empty() ? L"." : L": " + Widen(description));
+    return service + L" answered with error " + std::to_wstring(status) + L".";
+}
+
+// A form's fields, encoded.
+std::string Form(std::initializer_list<std::pair<const char*, std::string>> fields) {
+    std::string out;
+    for (const auto& [k, v] : fields) out += (out.empty() ? "" : "&") + std::string(k) + "=" + FormEncode(v);
+    return out;
+}
+
+// An expiring token renewed with the one that renews it (GitLab's OAuth tokens). Blocking.
+bool RenewToken(const Account& a, StoredToken& t) {
+    const HttpResponse res = HttpPost(Narrow(a.server) + "/oauth/token", { "User-Agent: Mangrove", "Accept: application/json" },
+                                      Form({ { "grant_type", "refresh_token" }, { "refresh_token", t.refresh }, { "client_id", t.client } }));
+    if (res.status != 200) return false;
+    Json json(res.body);
+    const std::string access = json.Member("access_token"), refresh = json.Member("refresh_token");
+    if (access.empty()) return false;
+    t.access = access;
+    if (!refresh.empty()) t.refresh = refresh;  // the old one stops working
+    t.expires = UnixNow() + std::clamp(ToInt(json.Member("expires_in"), 7200), 60, 86400 * 30);
+    return true;
+}
+
+// The headers of a request to a service's API with a token.
+std::vector<std::string> ApiHeaders(Forge f, const std::string& token) {
+    std::vector<std::string> h{ "User-Agent: Mangrove", "Accept: application/json" };
+    switch (f) {
+    case Forge::Gitea: h.push_back("Authorization: token " + token); break;
+    case Forge::AzureDevOps: h.push_back("Authorization: Basic " + Base64(":" + token)); break;
+    default: h.push_back("Authorization: Bearer " + token); break;  // GitHub, GitLab, Bitbucket
+    }
+    if (f == Forge::GitHub) h.push_back("X-GitHub-Api-Version: 2022-11-28");
+    return h;
+}
+
+// The address of an account's server by the rules of its service; empty, with the reason, when it can't be one.
+std::wstring ServerFor(Forge f, const std::wstring& input, std::wstring* error) {
+    const std::wstring s = NormalizeServer(input, error);
+    auto fail = [&](const wchar_t* why) {
+        if (error) *error = why;
+        return std::wstring();
+    };
+    if (s.empty()) return s;
+    if (f == Forge::Bitbucket && s != L"https://bitbucket.org") return fail(L"Mangrove connects to Bitbucket Cloud: https://bitbucket.org.");
+    if (f != Forge::AzureDevOps) return s;
+    // An organization: https://dev.azure.com/<organization>, or its old address https://<organization>.visualstudio.com
+    std::wstring host = s.substr(8), path;
+    if (const size_t slash = host.find(L'/'); slash != std::wstring::npos) {
+        path = host.substr(slash + 1);
+        host.resize(slash);
+    }
+    std::wstring org = path.substr(0, path.find(L'/'));
+    const std::wstring old = L".visualstudio.com";
+    if (host.size() > old.size() && host.compare(host.size() - old.size(), old.size(), old) == 0) org = host.substr(0, host.size() - old.size());
+    else if (host != L"dev.azure.com") return fail(L"This is not an Azure DevOps address: https://dev.azure.com/ and the name of your organization.");
+    if (org.empty()) return fail(L"Add the name of your organization to the address: https://dev.azure.com/your-organization.");
+    return L"https://dev.azure.com/" + org;
+}
+
+// "https://ada@host/x" -> "https://host/x": the token goes with the requests, not a user name in the address.
+std::wstring WithoutUser(std::wstring url) {
+    const size_t scheme = url.find(L"://");
+    if (scheme == std::wstring::npos) return url;
+    const size_t at = url.find(L'@', scheme + 3), slash = url.find(L'/', scheme + 3);
+    if (at != std::wstring::npos && (slash == std::wstring::npos || at < slash)) url.erase(scheme + 3, at - scheme - 2);
+    return url;
 }
 
 }  // namespace
@@ -307,8 +418,10 @@ std::wstring NormalizeServer(const std::wstring& input, std::wstring* error) {
 std::wstring TokenPageUrl(Forge f, const std::wstring& server) {
     switch (f) {
     case Forge::GitLab:
-        return server + L"/-/user_settings/personal_access_tokens?name=Mangrove&scopes=read_user,read_repository,write_repository";
+        return server + L"/-/user_settings/personal_access_tokens?name=Mangrove&scopes=read_user,read_api,read_repository,write_repository";
     case Forge::Gitea: return server + L"/user/settings/applications";
+    case Forge::Bitbucket: return L"https://id.atlassian.com/manage-profile/security/api-tokens";
+    case Forge::AzureDevOps: return server + L"/_usersSettings/tokens";
     default: return server + L"/settings/tokens/new?scopes=repo,workflow,read:user&description=Mangrove";
     }
 }
@@ -317,7 +430,7 @@ TokenCheck CheckToken(Forge f, const std::wstring& serverInput, const std::strin
     TokenCheck r;
     const std::string token(TrimSv(tokenInput));
     std::wstring why;
-    const std::wstring server = NormalizeServer(serverInput, &why);
+    const std::wstring server = ServerFor(f, serverInput, &why);
     if (server.empty()) {
         r.error = why;
         return r;
@@ -333,32 +446,23 @@ TokenCheck CheckToken(Forge f, const std::wstring& serverInput, const std::strin
     const std::wstring service = InfoOf(f).name;
     const std::string base = Narrow(server);
     std::string url;
-    std::vector<std::string> headers{ "User-Agent: Mangrove", "Accept: application/json" };
     switch (f) {
-    case Forge::GitHub:
-        url = server == L"https://github.com" ? "https://api.github.com/user" : base + "/api/v3/user";  // GitHub Enterprise Server
-        headers.push_back("Authorization: Bearer " + token);
-        headers.push_back("X-GitHub-Api-Version: 2022-11-28");
-        break;
-    case Forge::GitLab:
-        url = base + "/api/v4/user";
-        headers.push_back("Authorization: Bearer " + token);
-        break;
-    case Forge::Gitea:
-        url = base + "/api/v1/user";
-        headers.push_back("Authorization: token " + token);
-        break;
+    case Forge::GitHub: url = server == L"https://github.com" ? "https://api.github.com/user" : base + "/api/v3/user"; break;  // or Enterprise Server
+    case Forge::GitLab: url = base + "/api/v4/user"; break;
+    case Forge::Gitea: url = base + "/api/v1/user"; break;
+    case Forge::Bitbucket: url = "https://api.bitbucket.org/2.0/user"; break;
+    case Forge::AzureDevOps: url = base + "/_apis/connectionData?api-version=7.1-preview.1"; break;
     }
     Account a;
     a.forge = f;
     a.server = server;
-    const HttpResponse res = HttpGet(url, headers);
+    const HttpResponse res = HttpGet(url, ApiHeaders(f, token));
     if (res.status == 0) {
         r.error = L"Couldn't reach " + a.Host() + L": " + Widen(res.error);
         return r;
     }
     Json json(res.body);
-    if (res.status == 401 || res.status == 403) {
+    if (res.status == 401 || res.status == 403 || res.status == 203) {  // Azure DevOps answers a refused token with its sign-in page
         const std::string message = json.Member("message");
         r.error = service + L" refused the token: it may be mistyped, expired or revoked." +
                   (message.empty() ? std::wstring() : L" (" + Widen(message) + L")");
@@ -372,8 +476,42 @@ TokenCheck CheckToken(Forge f, const std::wstring& serverInput, const std::strin
         r.error = a.Host() + L" answered with error " + std::to_wstring(res.status) + L".";
         return r;
     }
-    a.login = Widen(json.Member(f == Forge::GitLab ? "username" : "login"));
-    a.name = Widen(json.Member(f == Forge::Gitea ? "full_name" : "name"));
+    auto text = [](Json& j, std::string_view key) {  // a null is no text
+        std::string v = j.Member(key);
+        return v == "null" ? std::wstring() : Widen(v);
+    };
+    switch (f) {
+    case Forge::GitLab:
+        a.login = text(json, "username");
+        a.name = text(json, "name");
+        break;
+    case Forge::Gitea:
+        a.login = text(json, "login");
+        a.name = text(json, "full_name");
+        break;
+    case Forge::Bitbucket:
+        a.login = text(json, "username");
+        if (a.login.empty()) a.login = text(json, "nickname");
+        a.name = text(json, "display_name");
+        break;
+    case Forge::AzureDevOps: {  // the user, and their sign-in address among the properties
+        const std::string userText = json.Member("authenticatedUser");
+        Json user(userText);
+        a.name = text(user, "customDisplayName");
+        if (a.name.empty()) a.name = text(user, "providerDisplayName");
+        const std::string props = user.Member("properties");
+        Json p(props);
+        const std::string accountText = p.Member("Account");
+        Json account(accountText);
+        a.login = text(account, "$value");
+        if (a.login.empty()) a.login = a.name;
+        break;
+    }
+    default:
+        a.login = text(json, "login");
+        a.name = text(json, "name");
+        break;
+    }
     if (a.login.empty()) {
         r.error = a.Host() + L" gave an unexpected answer: is it a " + service + L" server?";
         return r;
@@ -422,15 +560,16 @@ void RemoveAccount(const Account& a) {
 
 bool BrowserSignInAvailable(Forge f, const std::wstring& server) {
     std::wstring why;
-    return f == Forge::GitHub && !GitHubClientId().empty() && NormalizeServer(server, &why) == L"https://github.com";
+    const std::wstring s = NormalizeServer(server, &why);
+    return !ClientId(f).empty() && ((f == Forge::GitHub && s == L"https://github.com") || (f == Forge::GitLab && s == L"https://gitlab.com"));
 }
 
-DeviceCode ParseDeviceCode(int status, const std::string& body) {
+DeviceCode ParseDeviceCode(int status, const std::string& body, const std::wstring& service) {
     DeviceCode d;
     Json json(body);
     const std::string error = json.Member("error");
     if (status != 200 || !error.empty()) {
-        d.error = SignInError(status, error, json.Member("error_description"));
+        d.error = SignInError(status, error, json.Member("error_description"), service);
         return d;
     }
     d.deviceCode = json.Member("device_code");
@@ -438,17 +577,19 @@ DeviceCode ParseDeviceCode(int status, const std::string& body) {
     d.verifyUrl = Widen(json.Member("verification_uri"));
     d.interval = std::clamp(ToInt(json.Member("interval"), 5), 1, 60);
     d.expiresIn = std::clamp(ToInt(json.Member("expires_in"), 900), 60, 3600);
-    if (d.deviceCode.empty() || d.userCode.empty()) d.error = L"GitHub gave an unexpected answer.";
+    if (d.deviceCode.empty() || d.userCode.empty()) d.error = service + L" gave an unexpected answer.";
     return d;
 }
 
-DevicePoll ParseDevicePoll(int status, const std::string& body) {
+DevicePoll ParseDevicePoll(int status, const std::string& body, const std::wstring& service) {
     DevicePoll p;
     Json json(body);
     const std::string token = json.Member("access_token"), error = json.Member("error");
     if (!token.empty() && error.empty()) {
         p.state = DeviceState::Granted;
         p.token = token;
+        p.refreshToken = json.Member("refresh_token");
+        p.expiresIn = std::max(0, ToInt(json.Member("expires_in"), 0));
     } else if (error == "authorization_pending") {
         p.state = DeviceState::Pending;
     } else if (error == "slow_down") {
@@ -459,7 +600,7 @@ DevicePoll ParseDevicePoll(int status, const std::string& body) {
     } else if (error == "expired_token") {
         p.state = DeviceState::Expired;
     } else {
-        p.error = SignInError(status, error, json.Member("error_description"));
+        p.error = SignInError(status, error, json.Member("error_description"), service);
     }
     return p;
 }
@@ -473,24 +614,28 @@ TokenCheck BrowserSignIn(Forge f, const std::wstring& serverInput, const std::fu
         r.error = L"Signing in with the browser isn't available for this server: use a token.";
         return r;
     }
+    const std::wstring service = InfoOf(f).name;
+    const bool gitlab = f == Forge::GitLab;
+    const std::string base = Narrow(server), client = ClientId(f);
+    const std::string codeUrl = gitlab ? base + "/oauth/authorize_device" : "https://github.com/login/device/code";
+    const std::string tokenUrl = gitlab ? base + "/oauth/token" : "https://github.com/login/oauth/access_token";
+    const std::string scope = gitlab ? "read_user read_api read_repository write_repository" : "repo workflow read:user";
     const std::vector<std::string> headers{ "User-Agent: Mangrove", "Accept: application/json" };
-    const std::string client = "client_id=" + FormEncode(GitHubClientId());
-    HttpResponse res = HttpPost("https://github.com/login/device/code", headers, client + "&scope=" + FormEncode("repo workflow read:user"));
+    HttpResponse res = HttpPost(codeUrl, headers, Form({ { "client_id", client }, { "scope", scope } }));
     if (res.status == 0) {
-        r.error = L"Couldn't reach github.com: " + Widen(res.error);
+        r.error = L"Couldn't reach " + server.substr(8) + L": " + Widen(res.error);
         return r;
     }
-    DeviceCode code = ParseDeviceCode(res.status, res.body);
+    DeviceCode code = ParseDeviceCode(res.status, res.body, service);
     if (!code.error.empty()) {
         r.error = code.error;
         return r;
     }
     // The page that takes the code is the server's own: anything else isn't opened.
-    if (code.verifyUrl.compare(0, server.size() + 1, server + L"/") != 0) code.verifyUrl = server + L"/login/device";
+    if (code.verifyUrl.compare(0, server.size() + 1, server + L"/") != 0) code.verifyUrl = server + (gitlab ? L"/oauth/device" : L"/login/device");
     if (onCode) onCode(code);
 
-    const std::string ask = client + "&device_code=" + FormEncode(code.deviceCode) +
-                            "&grant_type=" + FormEncode("urn:ietf:params:oauth:grant-type:device_code");
+    const std::string ask = Form({ { "client_id", client }, { "device_code", code.deviceCode }, { "grant_type", "urn:ietf:params:oauth:grant-type:device_code" } });
     const double deadline = NowMs() + code.expiresIn * 1000.0;
     int interval = code.interval;
     for (;;) {
@@ -505,22 +650,31 @@ TokenCheck BrowserSignIn(Forge f, const std::wstring& serverInput, const std::fu
             r.error = L"The code expired before it was used: start again.";
             return r;
         }
-        res = HttpPost("https://github.com/login/oauth/access_token", headers, ask);
+        res = HttpPost(tokenUrl, headers, ask);
         if (cancel) {
             r.error = L"Cancelled.";
             return r;
         }
         if (res.status == 0) continue;  // the network failed for a moment: ask again at the next turn
-        const DevicePoll p = ParseDevicePoll(res.status, res.body);
+        const DevicePoll p = ParseDevicePoll(res.status, res.body, service);
         switch (p.state) {
         case DeviceState::Pending: break;
         case DeviceState::SlowDown: interval = std::max(interval + 5, p.interval); break;
-        case DeviceState::Denied: r.error = L"Mangrove wasn't authorized on GitHub."; return r;
+        case DeviceState::Denied: r.error = L"Mangrove wasn't authorized on " + service + L"."; return r;
         case DeviceState::Expired: r.error = L"The code expired before it was used: start again."; return r;
         case DeviceState::Failed: r.error = p.error; return r;
         case DeviceState::Granted:
             r = CheckToken(f, server, p.token);
-            if (r.ok && token) *token = p.token;
+            if (r.ok && token) {
+                StoredToken t;
+                t.access = p.token;
+                if (p.expiresIn > 0 && !p.refreshToken.empty()) {  // it expires: what renews it stays with it
+                    t.refresh = p.refreshToken;
+                    t.expires = UnixNow() + p.expiresIn;
+                    t.client = client;
+                }
+                *token = t.Text();
+            }
             return r;
         }
     }
@@ -528,12 +682,207 @@ TokenCheck BrowserSignIn(Forge f, const std::wstring& serverInput, const std::fu
 
 std::vector<std::pair<std::string, std::string>> GitAuthConfig(const Account& a, const std::string& token) {
     const std::string server = Narrow(a.server), host = Narrow(a.Host().substr(0, a.Host().find(L'/')));  // "github.com"
-    return {
-        // Basic authorization with the user name and the token, as git would send it after asking for a password.
-        { "http." + server + "/.extraHeader", "Authorization: Basic " + Base64(Narrow(a.login) + ":" + std::string(TrimSv(token))) },
-        { "url." + server + "/.insteadOf", "git@" + host + ":" },
-        { "url." + server + "/.insteadOf", "ssh://git@" + host + "/" },
+    // The user name sent with the token, as git would after asking for a password: GitLab wants "oauth2" with its
+    // OAuth tokens (and takes any with the others), Bitbucket a fixed one with API tokens, Azure DevOps none.
+    const std::string user = a.forge == Forge::GitLab      ? std::string("oauth2")
+                             : a.forge == Forge::Bitbucket  ? std::string("x-bitbucket-api-token-auth")
+                             : a.forge == Forge::AzureDevOps ? std::string()
+                                                             : Narrow(a.login);
+    const std::string header = "Authorization: Basic " + Base64(user + ":" + std::string(TrimSv(token)));
+    std::vector<std::pair<std::string, std::string>> c{ { "http." + server + "/.extraHeader", header } };
+    if (a.forge == Forge::AzureDevOps) {  // the organization's old address too; its SSH addresses don't turn into HTTPS ones by their start
+        c.push_back({ "http.https://" + server.substr(server.find_last_of('/') + 1) + ".visualstudio.com/.extraHeader", header });
+        return c;
+    }
+    c.push_back({ "url." + server + "/.insteadOf", "git@" + host + ":" });
+    c.push_back({ "url." + server + "/.insteadOf", "ssh://git@" + host + "/" });
+    if (a.forge == Forge::Bitbucket) {  // and its SSH host of its own
+        c.push_back({ "url." + server + "/.insteadOf", "git@ssh." + host + ":" });
+        c.push_back({ "url." + server + "/.insteadOf", "ssh://git@ssh." + host + "/" });
+    }
+    return c;
+}
+
+// ---------------------------------------------------------------- the repositories of an account
+
+int64_t ParseIsoTime(std::string_view s) {
+    auto num = [&](size_t at, size_t n, int& out) {
+        if (at + n > s.size()) return false;
+        out = 0;
+        for (size_t i = at; i < at + n; ++i) {
+            if (s[i] < '0' || s[i] > '9') return false;
+            out = out * 10 + (s[i] - '0');
+        }
+        return true;
     };
+    int Y = 0, M = 0, D = 0, h = 0, m = 0, sec = 0;
+    if (s.size() < 19 || !num(0, 4, Y) || s[4] != '-' || !num(5, 2, M) || s[7] != '-' || !num(8, 2, D) || (s[10] != 'T' && s[10] != ' ') ||
+        !num(11, 2, h) || s[13] != ':' || !num(14, 2, m) || s[16] != ':' || !num(17, 2, sec) || M < 1 || M > 12 || D < 1 || D > 31)
+        return 0;
+    size_t p = 19;
+    if (p < s.size() && s[p] == '.')
+        for (++p; p < s.size() && s[p] >= '0' && s[p] <= '9';) ++p;
+    int offset = 0;  // seconds east of UTC: "+02:00", "+0200"
+    if (p < s.size() && (s[p] == '+' || s[p] == '-')) {
+        int oh = 0, om = 0;
+        if (num(p + 1, 2, oh)) num(p + 3 < s.size() && s[p + 3] == ':' ? p + 4 : p + 3, 2, om);
+        offset = (oh * 60 + om) * 60 * (s[p] == '-' ? -1 : 1);
+    }
+    // days since 1970-01-01 of a date of the proleptic Gregorian calendar
+    const int y = Y - (M <= 2 ? 1 : 0);
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = y - era * 400;
+    const int doy = (153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = (int64_t)era * 146097 + doe - 719468;
+    return days * 86400 + h * 3600 + m * 60 + sec - offset;
+}
+
+std::vector<RemoteRepository> ParseRepositories(Forge f, const std::string& body) {
+    std::vector<RemoteRepository> out;
+    auto text = [](Json& j, std::string_view key) {  // a null is no text
+        std::string v = j.Member(key);
+        return v == "null" ? std::wstring() : Widen(v);
+    };
+    // Bitbucket and Azure DevOps answer with an object that holds the list.
+    std::string list = body;
+    if (f == Forge::Bitbucket || f == Forge::AzureDevOps) {
+        Json page(body);
+        list = page.Member(f == Forge::Bitbucket ? "values" : "value");
+    }
+    Json all(list);
+    for (const std::string_view e : all.Elements()) {
+        Json j(e);
+        RemoteRepository r;
+        r.name = text(j, "name");
+        r.description = text(j, "description");
+        switch (f) {
+        case Forge::GitLab:
+            r.path = text(j, "path_with_namespace");
+            r.url = text(j, "http_url_to_repo");
+            r.isPrivate = j.Member("visibility") != "public";
+            r.updated = ParseIsoTime(j.Member("last_activity_at"));
+            break;
+        case Forge::Gitea:
+            r.path = text(j, "full_name");
+            r.url = text(j, "clone_url");
+            r.isPrivate = j.Member("private") == "true";
+            r.updated = ParseIsoTime(j.Member("updated_at"));
+            break;
+        case Forge::Bitbucket: {  // the HTTPS one of its clone links
+            r.path = text(j, "full_name");
+            r.isPrivate = j.Member("is_private") == "true";
+            r.updated = ParseIsoTime(j.Member("updated_on"));
+            const std::string links = j.Member("links");
+            Json l(links);
+            const std::string clone = l.Member("clone");
+            Json c(clone);
+            for (const std::string_view x : c.Elements()) {
+                Json link(x);
+                if (link.Member("name") == "https") r.url = WithoutUser(text(link, "href"));
+            }
+            break;
+        }
+        case Forge::AzureDevOps: {
+            if (j.Member("isDisabled") == "true") continue;
+            const std::string project = j.Member("project");
+            Json p(project);
+            r.path = text(p, "name") + L"/" + r.name;
+            r.isPrivate = p.Member("visibility") != "public";
+            r.url = WithoutUser(text(j, "remoteUrl"));
+            break;
+        }
+        default:  // GitHub
+            r.path = text(j, "full_name");
+            r.url = text(j, "clone_url");
+            r.isPrivate = j.Member("private") == "true";
+            r.updated = ParseIsoTime(j.Member("pushed_at"));
+            if (!r.updated) r.updated = ParseIsoTime(j.Member("updated_at"));
+            break;
+        }
+        if (!r.url.empty()) out.push_back(std::move(r));
+    }
+    return out;
+}
+
+RepositoryList ListRepositories(const Account& a) {
+    RepositoryList out;
+    std::string token;
+    if (!TokenOf(a, token)) {
+        out.error = L"Mangrove has no token for this account: connect it again in Settings.";
+        return out;
+    }
+    const std::string base = Narrow(a.server);
+    const std::wstring service = InfoOf(a.forge).name;
+    const std::vector<std::string> headers = ApiHeaders(a.forge, token);
+    auto failure = [&](const HttpResponse& res) -> std::wstring {
+        if (res.status == 0) return L"Couldn't reach " + a.Host() + L": " + Widen(res.error);
+        if (res.status == 401 || res.status == 203)
+            return service + L" refused the account's token: it may have expired or been revoked. Connect the account again in Settings.";
+        if (res.status == 403 && a.forge == Forge::GitLab)
+            return L"The token can't list projects: it needs the read_api scope. Make a new one in Settings \u203A Integrations.";
+        if (res.status == 403 && a.forge == Forge::Bitbucket)
+            return L"The token can't list repositories: it needs the read:workspace and read:repository scopes.";
+        Json json(res.body);
+        const std::string message = json.Member("message");
+        return a.Host() + L" answered with error " + std::to_wstring(res.status) + (message.empty() ? L"." : L": " + Widen(message));
+    };
+    // The first page of each list; the others follow with &page=N, or (Bitbucket) the "next" address each page gives.
+    std::vector<std::string> lists;
+    size_t perPage = 100;
+    switch (a.forge) {
+    case Forge::GitHub:
+        lists.push_back((a.server == L"https://github.com" ? std::string("https://api.github.com") : base + "/api/v3") + "/user/repos?sort=pushed&per_page=100");
+        break;
+    case Forge::GitLab: lists.push_back(base + "/api/v4/projects?membership=true&simple=true&order_by=last_activity_at&per_page=100"); break;
+    case Forge::Gitea:
+        lists.push_back(base + "/api/v1/user/repos?limit=50");
+        perPage = 50;
+        break;
+    case Forge::AzureDevOps: lists.push_back(base + "/_apis/git/repositories?api-version=7.1"); break;
+    case Forge::Bitbucket: {  // no list of all of a user's repositories: those of each of their workspaces
+        const HttpResponse res = HttpGet("https://api.bitbucket.org/2.0/user/workspaces?pagelen=100", headers);
+        if (res.status != 200) {
+            out.error = failure(res);
+            return out;
+        }
+        Json page(res.body);
+        const std::string values = page.Member("values");
+        Json all(values);
+        for (const std::string_view e : all.Elements()) {
+            Json item(e);
+            const std::string ws = item.Member("workspace");
+            Json w(ws);
+            const std::string slug = w.Member("slug");
+            if (!slug.empty()) lists.push_back("https://api.bitbucket.org/2.0/repositories/" + FormEncode(slug) + "?role=member&pagelen=100&sort=-updated_on");
+        }
+        break;
+    }
+    }
+    for (const std::string& first : lists) {
+        std::string url = first;
+        for (int page = 1; page <= 10 && !url.empty() && out.error.empty(); ++page) {
+            const HttpResponse res = HttpGet(url, headers);
+            if (res.status != 200) {
+                out.error = failure(res);
+                break;
+            }
+            std::vector<RemoteRepository> got = ParseRepositories(a.forge, res.body);
+            const size_t n = got.size();
+            out.repos.insert(out.repos.end(), std::make_move_iterator(got.begin()), std::make_move_iterator(got.end()));
+            if (a.forge == Forge::Bitbucket) {
+                Json j(res.body);
+                url = j.Member("next");
+                if (url == "null") url.clear();
+            } else if (a.forge == Forge::AzureDevOps || n < perPage) {
+                url.clear();
+            } else {
+                url = first + "&page=" + std::to_string(page + 1);
+            }
+        }
+    }
+    std::stable_sort(out.repos.begin(), out.repos.end(), [](const RemoteRepository& x, const RemoteRepository& y) { return x.updated > y.updated; });
+    return out;
 }
 
 std::vector<std::string> GitAuthEnvironment(const std::vector<Account>& accounts) {
@@ -550,4 +899,32 @@ std::vector<std::string> GitAuthEnvironment(const std::vector<Account>& accounts
     }
     if (n) env.insert(env.begin(), "GIT_CONFIG_COUNT=" + std::to_string(n));
     return env;
+}
+
+// ---------------------------------------------------------------- what the credential store keeps
+
+std::string StoredToken::Text() const {
+    if (refresh.empty()) return access;  // as it was pasted
+    return "oauth\n" + access + "\n" + refresh + "\n" + std::to_string(expires) + "\n" + client;
+}
+
+StoredToken StoredToken::Read(const std::string& text) {
+    StoredToken t;
+    if (text.compare(0, 6, "oauth\n") != 0) {
+        t.access = std::string(TrimSv(text));
+        return t;
+    }
+    std::vector<std::string> f;
+    for (size_t p = 6; p <= text.size();) {
+        size_t e = text.find('\n', p);
+        if (e == std::string::npos) e = text.size();
+        f.push_back(text.substr(p, e - p));
+        p = e + 1;
+    }
+    f.resize(4);
+    t.access = f[0];
+    t.refresh = f[1];
+    t.expires = std::strtoll(f[2].c_str(), nullptr, 10);
+    t.client = f[3];
+    return t;
 }

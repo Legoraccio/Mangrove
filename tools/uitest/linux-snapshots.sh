@@ -76,7 +76,7 @@ timeout 180 "${run[@]}" >"$out/app.log" 2>&1 || status=$?
 [ "$status" = 124 ] && echo "The app did not finish in 3 minutes." >&2
 cat "$out/app.log"
 ls -l "$out"
-for f in 1-changes 2-commit 3-diff 4-diff-split 5-settings-general 6-settings-appearance 7-settings-git 8-settings-integrations 9-add-account 10-sign-in; do
+for f in 1-changes 2-commit 3-diff 4-diff-split 5-settings-general 6-settings-appearance 7-settings-git 8-settings-integrations 9-add-account 10-sign-in 12-clone; do
     [ -s "$out/$f.png" ] || { echo "Missing $f.png" >&2; status=1; }
 done
 grep -q "CRITICAL\|Gtk-WARNING\|Adwaita-WARNING" "$out/app.log" && { echo "The app reported problems (see app.log)." >&2; status=1; }

@@ -1,4 +1,5 @@
 #pragma once
+#include "clone.h"
 #include "common.h"
 #include "gfx.h"
 #include "navtree.h"
@@ -24,13 +25,14 @@ enum class Hit : uint8_t {
     InlineEdit, DialogBlock, DialogButton, ToastClose,
     WipAction, CommitField, CommitAmend, CommitButton,
     DiffClose, DiffMode, DiffNav, DiffFileStage, DiffHunk, DiffBody, DiffLine, DiffLineAction,
-    NavPage, SideHeader, SideItem, SettingsButton,
+    NavPage, SideHeader, SideItem, SideLocate, SettingsButton,
     SplitDetail, ColSep,
     HistorySearch, SearchClear, ScopeMenu, ReviewCommit,
     GraphBody, GraphLabel, RefPopup, RefPopupRow,
     Scroll,
     DetailMode, DetailSection, DetailFolder, DetailSha, DetailParent, DetailFile, DetailMore, DetailAction,
     StartOpen, StartRecent, StartRemove,
+    StartClone, CloneField, CloneRepo, CloneChoose, CloneGo, CloneClose, CloneSettings,
     Trust, Retry, CloseTab,
 };
 
@@ -175,6 +177,7 @@ struct RepoTab : RepoSession {
     std::vector<SideItem> side;
     bool sideDirty = true;
     bool sideCompact = false;  // the pane `side` was built for
+    bool revealHead = false;   // scroll the pane to the checked-out branch when it is painted next
 
     // details panel
     Scroller ds;
@@ -194,6 +197,11 @@ struct RepoTab : RepoSession {
     TextEdit commitBody{ L"", 0, 0, true, 20000 };  // multi-line
     bool amend = false;
     std::wstring amendPrefill;  // message loaded for amend, to clear it again if left untouched
+
+    // the start page's clone form (null: the recent repositories)
+    std::shared_ptr<CloneModel> clone;
+    TextEdit cloneText{ L"", 0, 0, false, 2000 }, cloneFolder{ L"", 0, 0, false, 2000 };
+    Scroller cs;  // the list of the accounts' repositories
 };
 
 class App {
@@ -211,6 +219,7 @@ public:
     void PaintTitle();
     void PaintCommandBar();
     void PaintStart(RepoTab& t, const RectF& r);
+    void PaintClone(RepoTab& t, float x, float y, float w, const RectF& page);  // the start page's clone form
     void PaintLoading(RepoTab& t, const RectF& r);
     void PaintError(RepoTab& t, const RectF& r);
     void PaintNav(RepoTab& t);
@@ -271,6 +280,17 @@ public:
     void ActivateTab(int i);
     void OpenPath(const std::wstring& path);
     void OpenDialog();
+    // Cloning: the start page shows the clone form (a new tab when the active one shows a repository).
+    void BeginClone();
+    void CloneEdited(RepoTab& t, int field);  // the address (5) or the folder (6) changed
+    void CloneKey(RepoTab& t, UINT vk);       // Enter clones, the arrows pick, Esc closes the form
+    void PickClone(RepoTab& t, int row);      // a repository of the list (rows as painted)
+    struct CloneRow {
+        int source = -1, repo = -1;  // repo -1: the account's header
+        float top = 0, h = 0;        // in the list, pixels
+    };
+    std::vector<CloneRow> cloneRows;  // the list as painted last
+    RectF rcCloneList;
 
     // ---- sessions (app.cpp): each tab's RepoSession reports here
     std::shared_ptr<RepoTab> MakeTab(const std::wstring& path);
@@ -285,6 +305,9 @@ public:
     void BuildSide(RepoTab& t);
     void BuildFileRows(RepoTab& t, int section, const std::vector<FileChange>& files, std::vector<FileRow>& out);
     void SideClick(RepoTab& t, int index);
+    // Opens the branches and the folders down to the checked-out branch and scrolls the pane to it; `select`
+    // also selects its commit, as a click on it does.
+    void RevealHeadBranch(RepoTab& t, bool select);
 
     // ---- input
     void OnMouseMove(float x, float y);
@@ -303,14 +326,14 @@ public:
     bool tracking = false;
     bool searchFocus = false;  // the history search box
 
-    enum class Drag { None, Detail, ColRef, ColGraph, ScrollGraph, ScrollSide, ScrollDetail, ScrollDiff, TextSelect, DiffSelect };
+    enum class Drag { None, Detail, ColRef, ColGraph, ScrollGraph, ScrollSide, ScrollDetail, ScrollDiff, ScrollClone, TextSelect, DiffSelect };
     Drag drag = Drag::None;
     int dragEdit = 0;   // text field being drag-selected (see EditById)
     int editFocus = 0;  // focused commit field of the active tab: 1 summary, 2 description
     TextEdit* EditById(int id);  // 1 summary, 2 description, 3 new branch or tag name, 4 search
     float dragStart = 0, dragOrig = 0, dragGrab = 0;
     RectF dragArea;
-    RectF scrollArea[4];  // graph, sidebar, details, diff (set while painting)
+    RectF scrollArea[5];  // graph, sidebar, details, diff, the clone list (set while painting)
 
     // ---- menus / commands
     void ShowRepoMenu(const RectF& r);

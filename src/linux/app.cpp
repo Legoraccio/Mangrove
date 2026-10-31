@@ -119,6 +119,7 @@ const struct {
     { "app.quit", { "<Control>q" } },
     { "win.new-tab", { "<Control>t" } },
     { "win.open", { "<Control>o" } },
+    { "win.clone", { "<Control><Shift>o" } },
     { "win.close-tab", { "<Control>w" } },
     { "win.find", { "<Control>f" } },
     { "win.find-next", { "<Control>g" } },
@@ -310,6 +311,11 @@ void Step(int step, int tries) {
         return;
     case 23:
         Snap("11-main.png");
+        ShowClone(w);  // the account has no token in the keyring: its list says so
+        Next(2500, 24);
+        return;
+    case 24:
+        Snap("12-clone.png");
         Next(300, 99);
         return;
     default:

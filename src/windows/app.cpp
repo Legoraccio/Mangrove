@@ -86,14 +86,17 @@ void App::ApplyTheme(bool force) {
     RefreshSettings(true);
 }
 
-static std::wstring PickFolder(HWND owner) {
+static std::wstring PickFolder(HWND owner, const wchar_t* title = L"Open a Git repository", const wchar_t* ok = L"Open repository",
+                               const std::wstring& start = L"") {
     ComPtr<IFileOpenDialog> dlg;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return L"";
     DWORD opts = 0;
     dlg->GetOptions(&opts);
     dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dlg->SetTitle(L"Open a Git repository");
-    dlg->SetOkButtonLabel(L"Open repository");
+    dlg->SetTitle(title);
+    dlg->SetOkButtonLabel(ok);
+    ComPtr<IShellItem> at;
+    if (!start.empty() && SUCCEEDED(SHCreateItemFromParsingName(start.c_str(), nullptr, IID_PPV_ARGS(&at)))) dlg->SetFolder(at.Get());
     if (FAILED(dlg->Show(owner))) return L"";
     ComPtr<IShellItem> item;
     if (FAILED(dlg->GetResult(&item))) return L"";
@@ -435,7 +438,7 @@ LPCWSTR App::CursorForHover() const {
     if (drag == Drag::TextSelect) return IDC_IBEAM;
     switch (hover.id) {
     case Hit::SplitDetail: case Hit::ColSep: return IDC_SIZEWE;
-    case Hit::HistorySearch: case Hit::CommitField: case Hit::InlineEdit: return IDC_IBEAM;
+    case Hit::HistorySearch: case Hit::CommitField: case Hit::InlineEdit: case Hit::CloneField: return IDC_IBEAM;
     default: return IDC_ARROW;
     }
 }
@@ -444,6 +447,7 @@ bool App::IsTipZone(Hit id) const {
     switch (id) {
     case Hit::ToolButton: case Hit::MoreMenu: case Hit::DiffNav: case Hit::DiffClose: case Hit::DiffHunk: case Hit::DiffLineAction:
     case Hit::DetailSha: case Hit::DetailMore: case Hit::DetailMode: case Hit::DetailAction: case Hit::SearchClear:
+    case Hit::SideLocate:
         return true;
     case Hit::NavPage: case Hit::SideHeader: case Hit::SettingsButton:
         return navCompact;  // icons only: the tooltip names them
@@ -704,6 +708,17 @@ void App::BuildSide(RepoTab& t) {
     }
 }
 
+void App::RevealHeadBranch(RepoTab& t, bool select) {
+    if (!t.data || t.data->headBranch.empty()) return;
+    const std::wstring& name = t.data->headBranch;
+    t.collapsed.erase(L"L");
+    for (size_t p = name.find(L'/'); p != std::wstring::npos; p = name.find(L'/', p + 1)) t.collapsed.erase(L"L/" + name.substr(0, p));
+    t.sideDirty = true;
+    t.revealHead = true;
+    if (select && t.data->headCommit >= 0) SelectCommit(t, t.data->headCommit);
+    Invalidate();
+}
+
 void App::SideClick(RepoTab& t, int index) {
     if (index < 0 || index >= (int)t.side.size() || !t.data) return;
     const SideItem& it = t.side[(size_t)index];
@@ -805,11 +820,13 @@ void App::OnMouseMove(float x, float y) {
     case Drag::ScrollSide:
     case Drag::ScrollDetail:
     case Drag::ScrollDiff:
+    case Drag::ScrollClone:
         if (t) {
             Scroller& s = drag == Drag::ScrollGraph ? t->gs
                           : drag == Drag::ScrollSide ? t->ss
                           : drag == Drag::ScrollDiff ? t->diffUi.vs
-                                                     : t->ds;
+                          : drag == Drag::ScrollClone ? t->cs
+                                                      : t->ds;
             RectF th;
             if (ScrollThumb(dragArea, s, th)) {
                 float track = dragArea.h - th.h;
@@ -869,7 +886,7 @@ void App::OnMouseDown(float x, float y, bool dbl) {
     }
     if (inlineInput.active && z.id != Hit::InlineEdit) CancelBranchInput();
     if (z.id != Hit::HistorySearch && z.id != Hit::SearchClear) searchFocus = false;
-    if (z.id != Hit::CommitField && z.id != Hit::CommitButton && z.id != Hit::CommitAmend) editFocus = 0;
+    if (z.id != Hit::CommitField && z.id != Hit::CommitButton && z.id != Hit::CommitAmend && z.id != Hit::CloneRepo) editFocus = 0;
     auto beginDrag = [&](Drag d, float orig) {
         drag = d;
         dragStart = x;
@@ -947,6 +964,9 @@ void App::OnMouseDown(float x, float y, bool dbl) {
         if (t && navCompact && z.a >= 0 && z.a < (int)t->side.size()) ShowSectionMenu(*t, t->side[(size_t)z.a].section, z.r);
         else if (t) SideClick(*t, z.a);
         break;
+    case Hit::SideLocate:
+        if (t) RevealHeadBranch(*t, true);
+        break;
     case Hit::SideItem:
         if (t) {
             const SideItem* it = z.a >= 0 && z.a < (int)t->side.size() ? &t->side[(size_t)z.a] : nullptr;
@@ -1001,7 +1021,7 @@ void App::OnMouseDown(float x, float y, bool dbl) {
         break;
     case Hit::Scroll:
         if (t) {
-            Scroller& s = z.a == 0 ? t->gs : z.a == 1 ? t->ss : z.a == 3 ? t->diffUi.vs : t->ds;
+            Scroller& s = z.a == 0 ? t->gs : z.a == 1 ? t->ss : z.a == 3 ? t->diffUi.vs : z.a == 4 ? t->cs : t->ds;
             dragArea = scrollArea[z.a];
             RectF th;
             if (ScrollThumb(dragArea, s, th)) {
@@ -1011,7 +1031,11 @@ void App::OnMouseDown(float x, float y, bool dbl) {
                     ScrollThumb(dragArea, s, th);
                 }
                 dragGrab = y - th.y;
-                drag = z.a == 0 ? Drag::ScrollGraph : z.a == 1 ? Drag::ScrollSide : z.a == 3 ? Drag::ScrollDiff : Drag::ScrollDetail;
+                drag = z.a == 0   ? Drag::ScrollGraph
+                       : z.a == 1 ? Drag::ScrollSide
+                       : z.a == 3 ? Drag::ScrollDiff
+                       : z.a == 4 ? Drag::ScrollClone
+                                  : Drag::ScrollDetail;
                 SetCapture(hwnd);
             }
         }
@@ -1091,6 +1115,36 @@ void App::OnMouseDown(float x, float y, bool dbl) {
         if (t) SelectCommit(*t, z.b);
         break;
     case Hit::StartOpen: OpenDialog(); break;
+    case Hit::StartClone: BeginClone(); break;
+    case Hit::CloneField:
+        FocusEdit(z.a);
+        beginTextSelect(z.a);
+        break;
+    case Hit::CloneRepo:
+        if (t && t->clone) {
+            PickClone(*t, z.a);
+            if (dbl) CloneKey(*t, VK_RETURN);  // a double-click clones it
+        }
+        break;
+    case Hit::CloneChoose:
+        if (t && t->clone && !t->clone->running) {
+            const std::wstring p = PickFolder(hwnd, L"Where to clone the repository", L"Choose folder", t->clone->folder);
+            if (!p.empty()) {
+                t->cloneFolder.Set(p);
+                CloneEdited(*t, 6);
+            }
+        }
+        break;
+    case Hit::CloneGo:
+        if (t) CloneKey(*t, VK_RETURN);
+        break;
+    case Hit::CloneClose:
+        if (t && t->clone && !t->clone->running) {
+            t->clone.reset();
+            FocusEdit(0);
+        }
+        break;
+    case Hit::CloneSettings: ShowSettings(3); break;
     case Hit::StartRecent:
         if (z.a >= 0 && z.a < (int)AppSettings().recent.size()) { std::wstring p = AppSettings().recent[(size_t)z.a]; OpenPath(p); }
         break;
@@ -1165,6 +1219,11 @@ void App::OnWheel(float delta, float x, float y, bool horizontal) {
     SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
     if (lines == WHEEL_PAGESCROLL) lines = 20;
     const float steps = -delta / 120.f * (float)std::max(1u, lines);
+    if (t->IsStart() && t->clone && rcCloneList.Contains(x, y)) {
+        if (!horizontal) t->cs.By(steps * DR(46));
+        Invalidate();
+        return;
+    }
     if (t->diff.open && rcGraph.Contains(x, y) && t->data && t->error.empty()) {
         DiffViewUi& v = t->diffUi;
         // Tilt wheel or Shift+wheel scroll sideways (a tilt to the right has a positive delta).
@@ -1203,7 +1262,22 @@ bool App::OnKey(UINT vk) {
         Invalidate();
         return true;  // typing must not move the graph selection
     }
-    if (editFocus && t) {  // commit summary / description
+    if (editFocus >= 5 && t && t->clone) {  // the clone form: the address and the folder
+        if (alt && !ctrl) return false;
+        if (vk == VK_ESCAPE || vk == VK_RETURN || (editFocus == 5 && (vk == VK_UP || vk == VK_DOWN))) {
+            CloneKey(*t, vk);
+            return true;
+        }
+        if (vk == VK_TAB) {
+            FocusEdit(editFocus == 5 ? 6 : 5);
+            return true;
+        }
+        (editFocus == 5 ? t->cloneText : t->cloneFolder).OnKey(vk, ctrl, shift, hwnd);
+        CloneEdited(*t, editFocus);
+        Invalidate();
+        return vk != VK_F5;
+    }
+    if ((editFocus == 1 || editFocus == 2) && t) {  // commit summary / description
         if (alt && !ctrl) return false;
         TextEdit& e = editFocus == 1 ? t->commitSummary : t->commitBody;
         switch (vk) {
@@ -1250,7 +1324,10 @@ bool App::OnKey(UINT vk) {
     if (!ctrl && t && t->diff.open && t->data && t->error.empty() && DiffKey(*t, vk)) return true;
     if (ctrl) {
         switch (vk) {
-        case 'O': OpenDialog(); return true;
+        case 'O':
+            if (shift) BeginClone();
+            else OpenDialog();
+            return true;
         case 'T': NewTab(L""); return true;
         case 'W': CloseTab(active); return true;
         case VK_TAB:
@@ -1321,6 +1398,7 @@ void App::OnChar(wchar_t ch) {
     if (editFocus) {
         if (TextEdit* e = EditById(editFocus)) {
             e->Insert(std::wstring_view(&ch, 1));
+            if (editFocus >= 5 && Active()) CloneEdited(*Active(), editFocus);
             Invalidate();
         }
         return;
@@ -1458,6 +1536,7 @@ void App::ShowSectionMenu(RepoTab& t, int section, const RectF& r) {
 void App::ShowRepoMenu(const RectF& r) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, 1, L"Open repository…\tCtrl+O");
+    AppendMenuW(m, MF_STRING, 6, L"Clone repository…\tCtrl+Shift+O");
     AppendMenuW(m, MF_STRING, 2, L"New tab\tCtrl+T");
     RepoTab* t = Active();
     if (t && t->data) {
@@ -1478,6 +1557,7 @@ void App::ShowRepoMenu(const RectF& r) {
     auto tp = ActivePtr();
     switch (cmd) {
     case 1: OpenDialog(); break;
+    case 6: BeginClone(); break;
     case 2: NewTab(L""); break;
     case 3: if (tp) tp->StartLoad(true); break;
     case 4: if (t && t->data) ShellExecuteW(hwnd, L"open", t->data->root.c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;

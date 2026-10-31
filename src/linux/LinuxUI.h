@@ -313,6 +313,7 @@ GtkWidget* ActiveMainWindow();
 std::vector<GtkWidget*> MainWindows();
 void OpenRepository(const std::wstring& path, GtkWidget* window);  // in a tab of window (the start page becomes it)
 void ChooseRepository(GtkWidget* window);                         // the folder dialog
+void ShowClone(GtkWidget* window);                                // the clone dialog (clone.cpp); the clone opens in window
 void SaveTabs(GtkWidget* closing = nullptr);                      // the tabs to reopen (without those of a closing window)
 void PrepareQuit();                                               // saves the tabs, which the windows then close
 void BroadcastSettingsChanged();                                  // every tab reloads what depends on the settings

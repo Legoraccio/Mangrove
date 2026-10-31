@@ -95,7 +95,7 @@ else
 fi
 cat "$out/app.log"
 ls -l "$out"
-for f in 1-changes 2-commit 3-diff 4-diff-split 5-settings-general 6-settings-appearance 7-settings-git 8-settings-integrations 9-add-account 10-sign-in; do
+for f in 1-changes 2-commit 3-diff 4-diff-split 5-settings-general 6-settings-appearance 7-settings-git 8-settings-integrations 9-add-account 10-sign-in 11-clone; do
     [ -s "$out/$f.png" ] || { echo "Missing $f.png" >&2; status=1; }
 done
 exit "$status"

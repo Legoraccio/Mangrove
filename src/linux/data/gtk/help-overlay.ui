@@ -30,6 +30,12 @@
             </child>
             <child>
               <object class="GtkShortcutsShortcut">
+                <property name="title">Clone a repository</property>
+                <property name="action-name">win.clone</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
                 <property name="title">Close the tab</property>
                 <property name="action-name">win.close-tab</property>
               </object>

@@ -4,6 +4,7 @@
 //
 //   coretest        (run.ps1 / run.sh build and run it)
 #include "accounts.h"
+#include "clone.h"
 #include "git.h"
 #include "navtree.h"
 #include "platform.h"
@@ -142,12 +143,32 @@ static void TestAccounts(const std::filesystem::path& dir) {
     CHECK(NormalizeServer(L"http://example.com", &why).empty() && !why.empty());
     CHECK(NormalizeServer(L"", &why).empty());
     CHECK(TokenPageUrl(Forge::GitHub, L"https://github.com").rfind(L"https://github.com/settings/tokens/new?", 0) == 0);
-    CHECK(TokenPageUrl(Forge::GitLab, L"https://gitlab.com").find(L"scopes=read_user,read_repository,write_repository") != std::wstring::npos);
+    CHECK(TokenPageUrl(Forge::GitLab, L"https://gitlab.com").find(L"scopes=read_user,read_api,read_repository,write_repository") != std::wstring::npos);
     const TokenCheck bad = CheckToken(Forge::GitHub, L"http://github.com", "x");
     CHECK(!bad.ok && !bad.error.empty());
+    // Bitbucket is bitbucket.org; Azure DevOps needs an organization (the server is never asked: the address is wrong)
+    CHECK(CheckToken(Forge::Bitbucket, L"https://example.com", "x").error.find(L"bitbucket.org") != std::wstring::npos);
+    CHECK(CheckToken(Forge::AzureDevOps, L"https://dev.azure.com/", "x").error.find(L"organization") != std::wstring::npos);
+    CHECK(CheckToken(Forge::AzureDevOps, L"https://example.com/org", "x").error.find(L"Azure DevOps") != std::wstring::npos);
+    CHECK(TokenPageUrl(Forge::Bitbucket, L"https://bitbucket.org").rfind(L"https://id.atlassian.com/", 0) == 0);
+    CHECK(Forges().size() == 5 && InfoOf(Forge::AzureDevOps).name == std::wstring(L"Azure DevOps"));
+
+    // What the credential store keeps: a pasted token as it is, one that expires with what renews it.
+    CHECK(StoredToken::Read(" glpat-x \n").access == "glpat-x" && StoredToken::Read("ghp_y").Text() == "ghp_y");
+    StoredToken st;
+    st.access = "a1";
+    st.refresh = "r1";
+    st.expires = 1793443529;
+    st.client = "c1";
+    const StoredToken back = StoredToken::Read(st.Text());
+    CHECK(back.access == "a1" && back.refresh == "r1" && back.expires == 1793443529 && back.client == "c1");
 
     // Signing in with the browser: the answers of the device flow (RFC 8628, as GitHub sends them).
-    CHECK(!BrowserSignInAvailable(Forge::GitLab, L"https://gitlab.com") && !BrowserSignInAvailable(Forge::GitHub, L"https://github.example.com"));
+    CHECK(!BrowserSignInAvailable(Forge::GitLab, L"https://gitlab.example.com") && !BrowserSignInAvailable(Forge::GitHub, L"https://github.example.com"));
+    CHECK(!BrowserSignInAvailable(Forge::Bitbucket, L"https://bitbucket.org") && !BrowserSignInAvailable(Forge::AzureDevOps, L"https://dev.azure.com/org"));
+    const DevicePoll gitlab = ParseDevicePoll(200, R"({"access_token":"t0k","token_type":"Bearer","expires_in":7200,"refresh_token":"r3f","scope":"read_api","created_at":1793443529})", L"GitLab");
+    CHECK(gitlab.state == DeviceState::Granted && gitlab.token == "t0k" && gitlab.refreshToken == "r3f" && gitlab.expiresIn == 7200);
+    CHECK(ParseDevicePoll(400, R"({"error":"invalid_client"})", L"GitLab").error.find(L"GitLab") == 0);
     const DeviceCode code = ParseDeviceCode(200, R"({"device_code":"3584d83530557fdd1f46af8289938c8ef79f9dc5","user_code":"WDJB-MJHT",
         "verification_uri":"https:\/\/github.com\/login\/device","expires_in":900,"interval":5})");
     CHECK(code.error.empty() && code.deviceCode == "3584d83530557fdd1f46af8289938c8ef79f9dc5" && code.userCode == L"WDJB-MJHT" &&
@@ -206,6 +227,14 @@ static void TestAccounts(const std::filesystem::path& dir) {
     CHECK(url(L"scp") == "https://github.com/octo/hello.git");
     CHECK(url(L"ssh") == "https://github.com/octo/hello.git");
     CHECK(url(L"other") == "git@gitlab.com:octo/hello.git");
+    // GitLab takes "oauth2" with its OAuth tokens, Bitbucket a fixed user name and its own SSH host, Azure DevOps no user name
+    const auto gl = GitAuthConfig({ Forge::GitLab, L"https://gitlab.com", L"ada", L"" }, "t");
+    CHECK(gl.size() == 3 && gl[0].second == "Authorization: Basic " + Base64("oauth2:t"));
+    const auto bb = GitAuthConfig({ Forge::Bitbucket, L"https://bitbucket.org", L"ada", L"" }, "t");
+    CHECK(bb.size() == 5 && bb[0].second == "Authorization: Basic " + Base64("x-bitbucket-api-token-auth:t") && bb[3].second == "git@ssh.bitbucket.org:");
+    const auto az = GitAuthConfig({ Forge::AzureDevOps, L"https://dev.azure.com/fabrikam", L"ada@example.com", L"" }, "t");
+    CHECK(az.size() == 2 && az[0].first == "http.https://dev.azure.com/fabrikam/.extraHeader" && az[0].second == "Authorization: Basic " + Base64(":t") &&
+          az[1].first == "http.https://fabrikam.visualstudio.com/.extraHeader");
     const GitOpResult header = RunGitOp(root, L"", L"config --get-urlmatch http.extraheader https://github.com/octo/hello.git", nullptr, ghEnv);
     CHECK(std::string(TrimSv(header.out)) == "Authorization: Basic " + Base64("octocat:ghp_x"));
 
@@ -459,6 +488,72 @@ static void TestSession(const std::filesystem::path& dir) {
     Pump([&] { return NowMs() > until; });  // what is still posted finds the session gone
 }
 
+// ---------------------------------------------------------------- cloning
+
+static void TestClone(const std::filesystem::path& dir) {
+    CHECK(CloneName(L"https://github.com/octocat/hello-world.git") == L"hello-world");
+    CHECK(CloneName(L"git@gitlab.com:group/sub/project.git") == L"project" && CloneName(L"git@host:solo") == L"solo");
+    CHECK(CloneName(L"https://dev.azure.com/org/project/_git/repo") == L"repo" && CloneName(L"https://example.com/a/b/") == L"b");
+    CHECK(IsGitAddress(L" https://github.com/o/r ") && IsGitAddress(L"git@github.com:o/r.git") && IsGitAddress(L"ssh://git@host/o/r"));
+    CHECK(!IsGitAddress(L"hello world") && !IsGitAddress(L"octocat") && !IsGitAddress(L"a/b:c@d"));
+    CHECK(ParseIsoTime("1970-01-01T00:00:00Z") == 0 && ParseIsoTime("2026-10-31T10:45:29Z") == 1793443529);
+    CHECK(ParseIsoTime("2026-10-31T12:45:29.123+02:00") == 1793443529 && ParseIsoTime("2026-10-31T10:45:29.5Z") == 1793443529);
+    CHECK(ParseIsoTime("yesterday") == 0 && ParseIsoTime("") == 0);
+
+    const std::vector<RemoteRepository> gh = ParseRepositories(Forge::GitHub, R"([
+        {"id":1,"name":"hello-world","full_name":"octocat/hello-world","private":false,"owner":{"login":"octocat"},
+         "description":"My first repository","clone_url":"https://github.com/octocat/hello-world.git","pushed_at":"2026-10-30T12:00:00Z"},
+        {"name":"secret","full_name":"octocat/secret","private":true,"description":null,"clone_url":"https://github.com/octocat/secret.git",
+         "pushed_at":null,"updated_at":"2026-01-02T03:04:05Z"}])");
+    CHECK(gh.size() == 2 && gh[0].path == L"octocat/hello-world" && gh[0].url == L"https://github.com/octocat/hello-world.git" &&
+          !gh[0].isPrivate && gh[0].description == L"My first repository" && gh[0].updated == ParseIsoTime("2026-10-30T12:00:00Z"));
+    CHECK(gh.size() == 2 && gh[1].isPrivate && gh[1].description.empty() && gh[1].updated == ParseIsoTime("2026-01-02T03:04:05Z"));
+    const std::vector<RemoteRepository> gl = ParseRepositories(Forge::GitLab, R"([{"id":7,"name":"Project","path_with_namespace":"group/project",
+        "http_url_to_repo":"https://gitlab.com/group/project.git","visibility":"internal","description":"","last_activity_at":"2026-10-29T08:00:00.000Z"}])");
+    CHECK(gl.size() == 1 && gl[0].path == L"group/project" && gl[0].isPrivate && gl[0].url == L"https://gitlab.com/group/project.git");
+    const std::vector<RemoteRepository> gt = ParseRepositories(Forge::Gitea, R"([{"name":"r","full_name":"ada/r","private":false,
+        "clone_url":"https://codeberg.org/ada/r.git","updated_at":"2026-10-28T10:00:00+02:00"}])");
+    CHECK(gt.size() == 1 && gt[0].path == L"ada/r" && gt[0].updated == ParseIsoTime("2026-10-28T08:00:00Z"));
+    CHECK(ParseRepositories(Forge::GitHub, "{\"message\":\"Bad credentials\"}").empty() && ParseRepositories(Forge::GitHub, "[]").empty());
+    const std::vector<RemoteRepository> bb = ParseRepositories(Forge::Bitbucket, R"({"pagelen":100,"values":[{"name":"Repo","full_name":"team/repo",
+        "is_private":true,"description":"","updated_on":"2026-10-27T09:00:00.123456+00:00","links":{"html":{"href":"https://bitbucket.org/team/repo"},
+        "clone":[{"name":"https","href":"https://ada@bitbucket.org/team/repo.git"},{"name":"ssh","href":"git@bitbucket.org:team/repo.git"}]}}],
+        "next":"https://api.bitbucket.org/2.0/repositories/team?page=2"})");
+    CHECK(bb.size() == 1 && bb[0].path == L"team/repo" && bb[0].url == L"https://bitbucket.org/team/repo.git" && bb[0].isPrivate &&
+          bb[0].updated == ParseIsoTime("2026-10-27T09:00:00Z"));
+    const std::vector<RemoteRepository> az = ParseRepositories(Forge::AzureDevOps, R"({"count":2,"value":[
+        {"id":"1","name":"Web","project":{"name":"Fabrikam","visibility":"private"},"remoteUrl":"https://fabrikam@dev.azure.com/fabrikam/Fabrikam/_git/Web","isDisabled":false},
+        {"id":"2","name":"Old","project":{"name":"Fabrikam"},"remoteUrl":"https://dev.azure.com/fabrikam/Fabrikam/_git/Old","isDisabled":true}]})");
+    CHECK(az.size() == 1 && az[0].path == L"Fabrikam/Web" && az[0].url == L"https://dev.azure.com/fabrikam/Fabrikam/_git/Web" && az[0].isPrivate);
+
+    // a clone of a repository on this disk, as the apps make it
+    SetMainDispatcher([](std::function<void()> fn) {
+        std::lock_guard<std::mutex> lk(g_postedMutex);
+        g_posted.push_back(std::move(fn));
+    });
+    const std::wstring source = (dir / L"source").wstring(), into = (dir / L"clones").wstring();
+    std::filesystem::create_directories(source);
+    std::filesystem::create_directories(into);
+    if (!Git(source, L"init -q -b main")) return;
+    Put(source, L"r.txt", "readme\n");
+    Git(source, L"add -A");
+    Git(source, L"commit -qm \"Start\"");
+    std::wstring url = L"file://" + std::wstring(source[0] == L'/' ? L"" : L"/") + source;
+    for (wchar_t& c : url) if (c == L'\\') c = L'/';
+    auto m = std::make_shared<CloneModel>();
+    m->folder = into;
+    CHECK(!m->Check().empty());  // no address yet
+    m->text = L"hello";
+    m->picked.clear();
+    CHECK(m->Address().empty() && !m->Check().empty());
+    m->text = url;
+    CHECK(m->Address() == url && m->Target() == PathJoin(into, L"source") && m->Check().empty());
+    CHECK(m->Start() && m->running);
+    CHECK(Pump([&] { return !m->running; }));
+    CHECK(m->error.empty() && m->cloned == PathJoin(into, L"source") && FileExists(PathJoin(m->cloned, L"r.txt")));
+    CHECK(m->Check().find(L"already in this folder") != std::wstring::npos);  // the same clone again
+}
+
 static int Run() {
     TestText();
     TestTrees();
@@ -470,6 +565,7 @@ static int Run() {
     TestAccounts(dir);
     TestRepository(dir);
     TestSession(dir);
+    TestClone(dir);
     std::filesystem::remove_all(dir, ec);
     std::printf("coretest: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

@@ -141,6 +141,10 @@ void Step() {
         SaveWindow(SettingsWindowHandle(), L"11-settings-mangrove.png");
         CloseSettings();
         SetTheme(th::Theme::System);
+        g_app->BeginClone();  // a new tab with the clone form; the account has no token: its list says so
+        return Next(12, 2500);
+    case 12:
+        SaveWindow(g_app->hwnd, L"12-clone.png");
         Log(L"done");
         PostMessageW(g_app->hwnd, WM_CLOSE, 0, 0);
         return;

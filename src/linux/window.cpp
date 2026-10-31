@@ -103,7 +103,14 @@ void RepoTab::BuildStart() {
     AddClass(open, "pill suggested-action");
     gtk_widget_set_halign(open, GTK_ALIGN_CENTER);
     gtk_actionable_set_action_name(GTK_ACTIONABLE(open), "win.open");
-    gtk_box_append(GTK_BOX(box), open);
+    GtkWidget* clone = gtk_button_new_with_label("Clone Repository\u2026");
+    AddClass(clone, "pill");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(clone), "win.clone");
+    GtkWidget* buttons = HBox(12);
+    gtk_widget_set_halign(buttons, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(buttons), open);
+    gtk_box_append(GTK_BOX(buttons), clone);
+    gtk_box_append(GTK_BOX(box), buttons);
 
     const std::vector<std::wstring>& recent = AppSettings().recent;
     GtkWidget* list = gtk_list_box_new();
@@ -849,6 +856,7 @@ RepoSession* CurrentSession(gpointer window) {
 
 WIN_ACTION(OnNewTab, { AddTab(window, L"", true); })
 WIN_ACTION(OnOpen, { ChooseRepository(window); })
+WIN_ACTION(OnClone, { ShowClone(window); })
 WIN_ACTION(OnCloseTab, {
     MainWin* w = Win(window);
     if (AdwTabPage* page = adw_tab_view_get_selected_page(w->tabs)) adw_tab_view_close_page(w->tabs, page);
@@ -913,6 +921,7 @@ void OnPullMode(GSimpleAction* a, GVariant* v, gpointer) {
 const GActionEntry kWinActions[] = {
     { "new-tab", OnNewTab, nullptr, nullptr, nullptr, {} },
     { "open", OnOpen, nullptr, nullptr, nullptr, {} },
+    { "clone", OnClone, nullptr, nullptr, nullptr, {} },
     { "close-tab", OnCloseTab, nullptr, nullptr, nullptr, {} },
     { "fetch", OnFetch, nullptr, nullptr, nullptr, {} },
     { "pull", OnPull, nullptr, nullptr, nullptr, {} },
@@ -1001,6 +1010,7 @@ void MainMenu(GtkMenuButton* button, gpointer) {
     AppendSection(m, s1);
     GMenu* s2 = g_menu_new();
     Append(s2, "Open\u2026", "win.open");
+    Append(s2, "Clone\u2026", "win.clone");
     GMenu* recent = g_menu_new();
     GMenu* paths = g_menu_new();
     const std::vector<std::wstring>& r = AppSettings().recent;

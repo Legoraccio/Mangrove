@@ -94,6 +94,12 @@ std::wstring GitErrorText(const GitOpResult& r) {
         return host + L" refused the SSH connection: no SSH key of yours is set up there. Connect the account in Settings \u203A "
                       L"Integrations, and Mangrove uses it for this server's remotes, or add an SSH key to your account on the server.";
     }
+    // HTTPS that asked for a user name and password (terminal prompts are off), or refused them: the accounts give them.
+    for (const char* asked : { "could not read Username", "terminal prompts disabled" })
+        if (r.err.find(asked) != std::string::npos)
+            return L"The server wants to know who you are: connect your account for it in Settings \u203A Integrations, or check the address.";
+    if (r.err.find("Authentication failed") != std::string::npos)
+        return L"The server refused the credentials: connect your account for it again in Settings \u203A Integrations.";
     if (r.err.find("Host key verification failed") != std::string::npos)
         return L"The SSH connection stopped: the server's host key isn't known on this computer yet. Connect the account in "
                L"Settings \u203A Integrations, and Mangrove uses it instead, or connect once with ssh in a terminal to accept the key.";

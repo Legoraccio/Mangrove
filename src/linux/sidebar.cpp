@@ -87,7 +87,19 @@ public:
 
     void Rebuild();
     void Flatten();
-    void RevealHead();
+    std::string RevealHead();  // opens the group and folders down to the checked-out branch; its key, or empty
+    void ScrollTo(const std::string& key);
+    void ShowHead();           // the button of the Branches group
+    bool HasHead() const {
+        RepoSession* s = owner->session();
+        return s && s->data && !s->data->headBranch.empty();
+    }
+    // The button that shows the checked-out branch, in the Branches group's row (top y, as on screen).
+    static graphene_rect_t LocateBox(float y, float w, float h) {
+        graphene_rect_t r;
+        graphene_rect_init(&r, w - 60, y + (h - 24) / 2, 24, 24);
+        return r;
+    }
     void Sync();
     void Activate(const Item& it);
     void Step(int dir);
@@ -169,9 +181,16 @@ void SidebarView::Rebuild() {
             roots.push_back(std::move(group));
         }
     }
-    if (s && s->data && !loadedOnce) RevealHead();
+    std::string head;
+    if (s && s->data && !loadedOnce) head = RevealHead();
     loadedOnce = s && s->data;
     Flatten();
+    if (!head.empty()) {  // once the view has its size: the first load can come before it is shown
+        std::weak_ptr<bool> a = Alive();
+        Later([this, a, head] {
+            if (a.lock()) ScrollTo(head);
+        });
+    }
 }
 
 void SidebarView::Flatten() {
@@ -197,13 +216,18 @@ void SidebarView::Flatten() {
     height = y + 10;
 }
 
-// The checked-out branch is visible after the first load, even inside folders.
-void SidebarView::RevealHead() {
+// The checked-out branch is visible after the first load, even inside folders, and when its button asks.
+std::string SidebarView::RevealHead() {
     RepoSession* s = owner->session();
+    if (!s || !s->data) return {};
     std::vector<std::string> path;
+    std::string key;
     std::function<bool(const Item&)> find = [&](const Item& item) {
         for (const Item& c : item.children) {
-            if (c.kind == Kind::Branch && s->data->refs[(size_t)c.index].head) return true;
+            if (c.kind == Kind::Branch && s->data->refs[(size_t)c.index].head) {
+                key = c.key;
+                return true;
+            }
             if (c.kind == Kind::Folder) {
                 path.push_back(c.key);
                 if (find(c)) return true;
@@ -213,8 +237,30 @@ void SidebarView::RevealHead() {
         return false;
     };
     for (const Item& group : roots)
-        if (group.key == "branches" && find(group))
+        if (group.key == "branches" && find(group)) {
+            collapsedGroups.erase(group.key);
             for (const std::string& k : path) expandedFolders.insert(k);
+        }
+    return key;
+}
+
+// A third of the way down the view, when it isn't in view already.
+void SidebarView::ScrollTo(const std::string& key) {
+    if (Height() <= 0) return;
+    for (const Row& r : rows)
+        if (r.item->key == key) {
+            if (r.y < ScrollY() || r.y + r.h > ScrollY() + Height()) SetScrollY(std::max(0.0, (double)r.y - Height() / 3));
+            return;
+        }
+}
+
+void SidebarView::ShowHead() {
+    const std::string head = RevealHead();
+    if (head.empty()) return;
+    Flatten();
+    Refresh();
+    if (const Item* it = Find(head, roots)) Activate(*it);  // picked, as a click does: its commit is selected
+    ScrollTo(head);
 }
 
 // The pages follow the history: Changes while the uncommitted changes are selected, else the picked branch, tag
@@ -276,10 +322,14 @@ void SidebarView::Draw(GtkSnapshot* s, float w, float h) {
         const Item& it = *r.item;
         const bool hover = (int)i == hoverRow;
         if (it.kind == Kind::Group) {
-            draw::Text(s, widget, it.title, Font().smallBold, dim, 14, y, w - 48, r.h);
+            draw::Text(s, widget, it.title, Font().smallBold, dim, 14, y, w - 76, r.h);
             if (!it.children.empty())
                 draw::Icon(s, widget, collapsedGroups.count(it.key) ? "pan-end-symbolic" : "pan-down-symbolic", w - 30, y + (r.h - 16) / 2, 16,
                            Pal().Fg(hover ? 0.8f : 0.4f));
+            if (it.key == "branches" && HasHead()) {
+                const graphene_rect_t b = LocateBox(y, w, r.h);
+                draw::Icon(s, widget, "find-location-symbolic", b.origin.x + 4, b.origin.y + 4, 16, Pal().Fg(hover ? 0.8f : 0.4f));
+            }
             continue;
         }
         const bool sel = it.key == selected;
@@ -358,6 +408,12 @@ static void OnPressed(GtkGestureClick* g, int n, double x, double y, gpointer da
     }
     if (button != GDK_BUTTON_PRIMARY) return;
     gtk_widget_grab_focus(v->widget);
+    const Row& r = v->rows[(size_t)row];
+    if (it.kind == Kind::Group && it.key == "branches" && v->HasHead() &&
+        Inside(SidebarView::LocateBox((float)(r.y - v->ScrollY()), v->Width(), r.h), x, y)) {
+        v->ShowHead();
+        return;
+    }
     switch (it.kind) {
     case Kind::Group:
         if (!v->collapsedGroups.erase(it.key)) v->collapsedGroups.insert(it.key);
@@ -391,12 +447,20 @@ static gboolean OnKey(GtkEventControllerKey*, guint key, guint, GdkModifierType,
     }
 }
 
-static gboolean OnTooltip(GtkWidget*, int, int y, gboolean keyboard, GtkTooltip* tip, gpointer data) {
+static gboolean OnTooltip(GtkWidget*, int x, int y, gboolean keyboard, GtkTooltip* tip, gpointer data) {
     SidebarView* v = static_cast<SidebarView*>(data);
     const int row = keyboard ? -1 : v->RowAt(y);
     if (row < 0) return FALSE;
     const Row& r = v->rows[(size_t)row];
     const Kind k = r.item->kind;
+    if (k == Kind::Group && r.item->key == "branches" && v->HasHead()) {
+        const graphene_rect_t b = SidebarView::LocateBox((float)(r.y - v->ScrollY()), v->Width(), r.h);
+        if (!Inside(b, x, y)) return FALSE;
+        gtk_tooltip_set_text(tip, "Show the current branch");
+        const GdkRectangle area = { (int)b.origin.x, (int)b.origin.y, (int)b.size.width, (int)b.size.height };
+        gtk_tooltip_set_tip_area(tip, &area);
+        return TRUE;
+    }
     if (k != Kind::Branch && k != Kind::Tag && k != Kind::Stash && k != Kind::Submodule) return FALSE;
     gtk_tooltip_set_text(tip, r.item->title.c_str());
     const GdkRectangle area = { 0, (int)(r.y - v->ScrollY()), (int)v->Width(), (int)r.h };

@@ -93,6 +93,7 @@ void App::Paint() {
         anim |= t->gs.Step(dt);
         anim |= t->ss.Step(dt);
         anim |= t->ds.Step(dt);
+        anim |= t->cs.Step(dt);
         if (t->diff.open) anim |= t->diffUi.vs.Step(dt);
     }
     PaintTitle();
@@ -154,6 +155,18 @@ void DrawLogo(Gfx& gfx, float cx, float cy, float s) {
     gfx.Circle(xt, yt + r * 0.6f, r * 1.25f, LogoGold);
     gfx.Circle(cx + s * 0.28f, cy - s * 0.18f, r * 1.15f, LogoGoldHi);
     gfx.Circle(xt, yb - r * 0.4f, r * 1.0f, LogoGold);
+}
+
+// A sight: a ring with a dot in the middle and four marks around it ("show where it is").
+static void DrawLocateIcon(Gfx& gfx, float cx, float cy, float s, const Color& c) {
+    const float sw = std::max(1.f, std::round(s * 0.09f * 2.f) / 2.f);
+    const float r = s * 0.3f, out = s * 0.52f;
+    gfx.CircleS(cx, cy, r, c, sw);
+    gfx.Circle(cx, cy, s * 0.09f, c);
+    gfx.Line(cx, cy - out, cx, cy - r, c, sw);
+    gfx.Line(cx, cy + r, cx, cy + out, c, sw);
+    gfx.Line(cx - out, cy, cx - r, cy, c, sw);
+    gfx.Line(cx + r, cy, cx + out, cy, c, sw);
 }
 
 void DrawBranchIcon(Gfx& gfx, float cx, float cy, float s, const Color& c) {
@@ -230,7 +243,7 @@ void App::PaintScrollbar(const RectF& area, Scroller& s, int id) {
     RectF thumb;
     if (!ScrollThumb(area, s, thumb)) return;
     const bool active = Hov(Hit::Scroll, id) || (id == 0 && drag == Drag::ScrollGraph) || (id == 1 && drag == Drag::ScrollSide) ||
-                        (id == 2 && drag == Drag::ScrollDetail) || (id == 3 && drag == Drag::ScrollDiff);
+                        (id == 2 && drag == Drag::ScrollDetail) || (id == 3 && drag == Drag::ScrollDiff) || (id == 4 && drag == Drag::ScrollClone);
     const RectF track{ area.r() - DR(12), area.y, DR(12), area.h };
     if (active) gfx.FillR(track.Inset(DR(2), DR(2)), DR(5), ScrollbarTrack);
     const float w = active ? DR(6) : DR(3);
@@ -420,12 +433,12 @@ void App::PaintCommandBar() {
 
 // ============================================================================ start page / loading / error
 
-void App::PaintStart(RepoTab&, const RectF& r) {
+void App::PaintStart(RepoTab& t, const RectF& r) {
     const std::vector<std::wstring>& recent = AppSettings().recent;
     gfx.Fill(r, GraphBg);
     const float cw = std::min(DR(640), r.w - DR(48));
     const float x = std::round(r.cx() - cw * 0.5f);
-    float y = r.y + std::max(DR(40), std::round(r.h * 0.12f));
+    float y = r.y + std::max(DR(40), std::round(r.h * (t.clone ? 0.05f : 0.12f)));
 
     Logo(x + DR(28), y + DR(28), DR(56));
     gfx.Text(L"Mangrove", { x + DR(72), y - DR(4), cw, DR(46) }, F::Huge, Text);
@@ -437,9 +450,18 @@ void App::PaintStart(RepoTab&, const RectF& r) {
     gfx.Glyph(0xE838, { ob.x + DR(8), ob.y, DR(26), ob.h }, F::Icon16, TextOnAccent);
     gfx.Text(L"Open repository", { ob.x + DR(40), ob.y, ob.w - DR(46), ob.h }, F::UISemi, TextOnAccent);
     AddZone(ob, Hit::StartOpen);
-    gfx.Text(L"Ctrl+O   ·   or drop a folder anywhere on this window", { ob.r() + DR(18), y, cw - ob.w - DR(18), ob.h }, F::Small,
-             TextDim);
+    const RectF cb{ ob.r() + DR(10), y, DR(192), DR(36) };
+    Button(cb, L"", 0, Hov(Hit::StartClone) || t.clone != nullptr, true);
+    gfx.Glyph(0xE896, { cb.x + DR(8), cb.y, DR(26), cb.h }, F::Icon16, Text);
+    gfx.Text(L"Clone repository", { cb.x + DR(40), cb.y, cb.w - DR(46), cb.h }, F::UI, Text);
+    AddZone(cb, Hit::StartClone);
+    gfx.Text(L"Ctrl+O to open, Ctrl+Shift+O to clone, or drop a folder anywhere on this window", { x, ob.b() + DR(8), cw, DR(20) },
+             F::Small, TextDim);
     y += DR(72);
+    if (t.clone) {
+        PaintClone(t, x, y, cw, r);
+        return;
+    }
 
     gfx.Text(L"Recent repositories", { x, y, cw, DR(24) }, F::RowTitle, Text);
     y += DR(34);
@@ -465,6 +487,131 @@ void App::PaintStart(RepoTab&, const RectF& r) {
         }
         y += DR(50);
     }
+}
+
+// The clone form: the address or words that pick one of the accounts' repositories, the list, the folder.
+void App::PaintClone(RepoTab& t, float x, float y, float cw, const RectF& page) {
+    CloneModel& m = *t.clone;
+    gfx.Text(L"Clone a repository", { x, y, cw - DR(40), DR(24) }, F::RowTitle, Text);
+    if (!m.running) {
+        const RectF xb{ x + cw - DR(28), y - DR(2), DR(28), DR(28) };
+        if (Hov(Hit::CloneClose)) gfx.FillR(xb, DR(4), SubtleHover);
+        gfx.Glyph(0xE711, xb, F::Icon10, TextSec);
+        AddZone(xb, Hit::CloneClose);
+    }
+    y += DR(34);
+    const RectF fb{ x, y, cw, DR(34) };
+    TextBoxFrame(gfx, fb, editFocus == 5);
+    PaintEdit(t.cloneText, fb.Inset(DR(10), 0), F::UI, L"An address, or words of one of your repositories", editFocus == 5);
+    AddZone(fb, Hit::CloneField, 5);
+    y += DR(44);
+
+    // the list, by account
+    const float bottom = DR(34) + DR(10) + DR(56);  // the folder's row, the message
+    const RectF list{ x - DR(10), y, cw + DR(20), std::max(DR(96), page.b() - DR(20) - bottom - y) };
+    rcCloneList = list;
+    cloneRows.clear();
+    float top = 0;
+    const bool address = IsGitAddress(m.text);
+    for (size_t s = 0; s < m.sources.size() && !address; ++s) {
+        cloneRows.push_back({ (int)s, -1, top, DR(30) });
+        top += DR(30);
+        for (size_t i = 0; i < m.sources[s].repos.size(); ++i)
+            if (m.Matches(m.sources[s].repos[i])) {
+                cloneRows.push_back({ (int)s, (int)i, top, DR(46) });
+                top += DR(46);
+            }
+    }
+    t.cs.view = list.h;
+    t.cs.content = top;
+    t.cs.Clamp();
+    gfx.PushClip(list);
+    const float pos = (float)t.cs.pos;
+    for (size_t k = 0; k < cloneRows.size(); ++k) {
+        const CloneRow& row = cloneRows[k];
+        const RectF rr{ list.x, std::round(list.y + row.top - pos), list.w, row.h };
+        if (rr.b() < list.y || rr.y > list.b()) continue;
+        const CloneModel::Source& src = m.sources[(size_t)row.source];
+        if (row.repo < 0) {  // the account
+            const std::wstring who = std::wstring(InfoOf(src.account.forge).name) + L" · " + src.account.login + L" · " + src.account.Host();
+            const std::wstring note = src.loading ? std::wstring(L"Loading…") : !src.error.empty() ? src.error
+                                                                                    : Plural(src.repos.size(), L"repository", L"repositories");
+            const float nw = std::min(gfx.Measure(note, F::Small) + DR(2), rr.w * 0.6f);
+            gfx.Text(who, { rr.x + DR(10), rr.y + DR(6), rr.w - nw - DR(30), DR(22) }, F::SmallSemi, TextSec);
+            gfx.Text(note, { rr.r() - DR(10) - nw, rr.y + DR(6), nw, DR(22) }, F::Small, src.error.empty() ? TextDim : ErrorText);
+            continue;
+        }
+        const RemoteRepository& repo = src.repos[(size_t)row.repo];
+        const bool picked = !m.picked.empty() && repo.url == m.picked;
+        if (picked) {
+            gfx.FillR(rr, DR(6), Subtle);
+            gfx.FillR({ rr.x, rr.y + DR(12), DR(3), rr.h - DR(24) }, DR(1.5f), Accent);
+        } else if (Hov(Hit::CloneRepo, (int)k)) {
+            gfx.FillR(rr, DR(6), Hover);
+        }
+        const std::wstring when = repo.updated ? FormatRelative(repo.updated) : std::wstring();
+        const float ww = when.empty() ? 0.f : gfx.Measure(when, F::Small) + DR(2);
+        float tx = rr.x + DR(14);
+        const float nameW = std::min(gfx.Measure(repo.name, F::UISemi) + DR(2), rr.w - ww - DR(60));
+        gfx.Text(repo.name, { tx, rr.y + DR(5), nameW, DR(20) }, F::UISemi, Text);
+        if (repo.isPrivate) gfx.Glyph(0xE72E, { tx + nameW + DR(4), rr.y + DR(5), DR(16), DR(20) }, F::Icon10, TextDim);  // a lock
+        const std::wstring sub = repo.description.empty() ? repo.path : repo.path + L" · " + repo.description;
+        gfx.Text(sub, { tx, rr.y + DR(24), rr.w - ww - DR(40), DR(18) }, F::Small, TextDim);
+        if (ww > 0) gfx.Text(when, { rr.r() - DR(12) - ww, rr.y + DR(5), ww, DR(20) }, F::Small, TextDim);
+        AddZone(Intersect(rr, list), Hit::CloneRepo, (int)k);
+    }
+    if (address) {
+        gfx.Text(L"Mangrove clones this address.", { list.x + DR(10), list.y + DR(8), list.w - DR(20), DR(22) }, F::UI, TextSec);
+    } else if (m.sources.empty()) {
+        gfx.Text(L"Connect your GitHub, GitLab or other accounts to pick your repositories here, or paste an address above.",
+                 { list.x + DR(10), list.y + DR(8), list.w - DR(20), DR(22) }, F::UI, TextSec);
+        const wchar_t* label = L"Settings › Integrations";
+        const RectF lb{ list.x + DR(10), list.y + DR(36), gfx.Measure(label, F::UISemi) + DR(4), DR(22) };
+        gfx.Text(label, lb, F::UISemi, Hov(Hit::CloneSettings) ? AccentHi : AccentText);
+        AddZone(lb, Hit::CloneSettings);
+    } else if (cloneRows.size() == m.sources.size() && !TrimW(m.text).empty()) {
+        bool loading = false;
+        for (const CloneModel::Source& src : m.sources) loading |= src.loading;
+        if (!loading) gfx.Text(L"None of your repositories matches.", { list.x + DR(10), list.y + top + DR(8), list.w - DR(20), DR(22) }, F::UI, TextDim);
+    }
+    gfx.PopClip();
+    PaintScrollbar(list, t.cs, 4);
+    y = list.b() + DR(10);
+
+    // the folder, and the clone
+    gfx.Text(L"Folder", { x, y, DR(60), DR(34) }, F::UI, TextSec);
+    const float cloneW = DR(110), chooseW = DR(96);
+    const RectF ff{ x + DR(60), y, cw - DR(60) - chooseW - cloneW - DR(16), DR(34) };
+    TextBoxFrame(gfx, ff, editFocus == 6);
+    PaintEdit(t.cloneFolder, ff.Inset(DR(10), 0), F::UI, L"Where the clone goes", editFocus == 6);
+    AddZone(ff, Hit::CloneField, 6);
+    const RectF chb{ ff.r() + DR(8), y, chooseW, DR(34) };
+    Button(chb, L"Choose…", 0, Hov(Hit::CloneChoose), !m.running);
+    AddZone(chb, Hit::CloneChoose);
+    const RectF gb{ chb.r() + DR(8), y, cloneW, DR(34) };
+    const bool ready = !m.running && m.Check().empty();
+    Button(gb, m.running ? L"Cloning…" : L"Clone", ready ? 1 : 0, Hov(Hit::CloneGo), ready, F::UISemi);
+    AddZone(gb, Hit::CloneGo);
+    y += DR(44);
+    std::wstring note;
+    Color nc = TextDim;
+    float nx = x;
+    if (m.running) {
+        Spinner(x + DR(8), y + DR(10), DR(7));
+        nx += DR(24);
+        note = m.progress.empty() ? L"Cloning into " + m.Target() + L"…" : m.progress;
+        nc = TextSec;
+    } else if (!m.error.empty()) {
+        note = m.error;
+        nc = ErrorText;
+    } else if (!m.Target().empty()) {
+        note = L"Clones into " + m.Target();
+    }
+    if (!note.empty()) {
+        auto layout = gfx.Layout(note, F::Caption, x + cw - nx, DR(52));
+        gfx.dc()->DrawTextLayout({ nx, y }, layout.Get(), gfx.B(nc));
+    }
+    if (m.running) animating = true;
 }
 
 void App::PaintLoading(RepoTab& t, const RectF& r) {
@@ -527,6 +674,15 @@ void App::PaintNav(RepoTab& t) {
     t.ss.view = list.h;
     t.ss.content = t.side.empty() ? 0.0 : (double)DR(t.side.back().top + t.side.back().h) + DR(8);
     t.ss.Clamp();
+    if (t.revealHead) {  // the checked-out branch comes into view, a third of the way down
+        t.revealHead = false;
+        for (const SideItem& it : t.side)
+            if (it.kind == SideKind::Branch && it.section == 0 && it.head) {
+                const double top = it.top * g_S, bottom = (it.top + it.h) * g_S;
+                if (top < t.ss.target || bottom > t.ss.target + t.ss.view) t.ss.To(top - t.ss.view / 3, false);
+                break;
+            }
+    }
     const float pos = (float)t.ss.pos;
     gfx.PushClip(list);
     auto first = std::upper_bound(t.side.begin(), t.side.end(), pos / g_S, [](float v, const SideItem& s) { return v < s.top + s.h; });
@@ -584,17 +740,31 @@ void App::PaintNav(RepoTab& t) {
             case 3: gfx.Glyph(0xE8EC, ib, F::Icon16, Text); break;
             default: gfx.Glyph(0xE8F1, ib, F::Icon16, Text); break;
             }
+            RectF locate{};  // Branches: the button that shows the checked-out branch
             if (!compact) {
                 gfx.Glyph(it->expanded ? 0xE70D : 0xE76C, { rr.r() - DR(30), rr.y, DR(20), rr.h }, F::Icon10, TextDim);
                 const std::wstring cnt = std::to_wstring(it->count);
                 const float cw = gfx.Measure(cnt, F::Small);
                 gfx.Text(cnt, { rr.r() - DR(34) - cw, rr.y, cw + 2, rr.h }, F::Small, TextDim);
-                gfx.Text(it->text, { textX, rr.y, rr.r() - DR(42) - cw - textX, rr.h }, F::Nav, Text);
+                float textR = rr.r() - DR(42) - cw;
+                if (it->section == 0 && !d.headBranch.empty()) {
+                    locate = { rr.r() - DR(40) - cw - DR(24), std::round(rr.cy() - DR(12)), DR(24), DR(24) };
+                    const bool lh = Hov(Hit::SideLocate);
+                    if (lh) {
+                        gfx.FillR(locate, DR(4), SubtleHover);
+                        tipText = L"Show the current branch";
+                        tipAnchor = locate;
+                    }
+                    DrawLocateIcon(gfx, locate.cx(), locate.cy(), DR(14), lh ? Text : TextDim);
+                    textR = locate.x - DR(4);
+                }
+                gfx.Text(it->text, { textX, rr.y, textR - textX, rr.h }, F::Nav, Text);
             } else if (hov) {
                 tipText = it->text;
                 tipAnchor = rr;
             }
             AddZone(zr, Hit::SideHeader, i);
+            if (locate.w > 0) AddZone(Intersect(locate, list), Hit::SideLocate);  // after the header's: it wins
             continue;
         }
         case SideKind::Divider:

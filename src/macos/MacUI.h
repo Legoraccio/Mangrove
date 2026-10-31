@@ -127,6 +127,7 @@ extern NSString* const MGSettingsChangedNotification;  // pull mode or diff layo
 - (void)fillStashMenu:(NSMenu*)menu stash:(int)index;
 
 // menu and toolbar commands
+- (IBAction)cloneRepository:(id)sender;  // the clone sheet; the clone opens in place of the start page, or in a new tab
 - (IBAction)fetch:(id)sender;
 - (IBAction)pull:(id)sender;
 - (IBAction)push:(id)sender;
@@ -150,6 +151,12 @@ extern NSString* const MGSettingsChangedNotification;  // pull mode or diff layo
 - (IBAction)closeDiff:(id)sender;
 @end
 
+// The clone sheet over a window: an address or a repository of the connected accounts, and a folder (Clone.mm).
+@interface MGCloneSheet : NSWindowController <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate>
+- (instancetype)initWithOwner:(MGRepoWindowController*)owner;
+- (void)begin;
+@end
+
 // Settings, by category: General, Appearance, Git, Integrations (Preferences.mm).
 @interface MGPreferencesController : NSWindowController
 + (instancetype)shared;
@@ -169,6 +176,7 @@ void ApplyAppearance();  // light, dark or the system's, as the settings say
 - (IBAction)newWindow:(id)sender;
 - (IBAction)newWindowForTab:(id)sender;
 - (IBAction)openDocument:(id)sender;
+- (IBAction)cloneRepository:(id)sender;  // with no window open: a new one, with the clone sheet
 - (IBAction)showSettings:(id)sender;
 - (IBAction)setPullMode:(id)sender;  // tag: Settings::pullMode
 @end

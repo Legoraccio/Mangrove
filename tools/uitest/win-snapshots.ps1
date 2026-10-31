@@ -86,7 +86,7 @@ if (Test-Path "$Out\snapshots.log") { Get-Content "$Out\snapshots.log" }
 Get-ChildItem $Out | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 foreach ($f in '1-main', '2-settings-general', '3-settings-appearance', '4-settings-git', '5-settings-integrations',
                 '6-settings-token', '7-settings-sign-in', '8-main-dark', '9-settings-dark', '10-main-mangrove',
-                '11-settings-mangrove') {
+                '11-settings-mangrove', '12-clone') {
     $png = Join-Path $Out "$f.png"
     if (-not (Test-Path $png) -or (Get-Item $png).Length -eq 0) {
         Write-Host "Missing $f.png"

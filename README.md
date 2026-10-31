@@ -55,10 +55,13 @@ message, author, SHA or ref name; show all branches or only the current one.
 
 **Branches, tags, stashes, remotes, submodules.** Browsable in the sidebar, with folders and
 ahead/behind counts; double-click to check out (a remote branch creates its tracking branch), or use
-the context menus.
+the context menus: on a commit or a branch, create a branch or a tag there; on a branch, delete it
+here, on its remote, or both (the question says how many commits only that branch has). At startup
+the sidebar opens on the checked-out branch, and the sight next to *Branches* brings you back to it.
 
 **Commit.** The uncommitted changes are the first row of the history. Stage and unstage files or
-folders, discard changes (always confirmed), write a summary with a 72-character counter and a
+folders, discard changes (always confirmed; a submodule goes back to the commit recorded for it),
+write a summary with a 72-character counter and a
 description, amend the previous commit; during a merge git's prepared message is filled in.
 
 **Diff.** Click a file to see its diff, unified or side by side, with changed words highlighted and
@@ -71,17 +74,21 @@ of file" are handled; minified lines are cut around the change.
 **Git actions.** Fetch (all remotes, pruning deleted branches), pull (merge if possible,
 fast-forward only, or rebase, with local changes set aside and put back), push (creating the upstream
 when there is none; when the remote is ahead, pull or force push with `--force-with-lease`), new
-branch, stash and pop, check out, revert. Each runs on its own thread with git's progress on screen.
-**Undo and redo** cover checkouts, new branches, stashes, commits and reverts made in Mangrove,
-as long as nothing was pushed.
+branch and tag, delete a branch, stash and pop, check out, revert. Each runs on its own thread with
+git's progress on screen. **Undo and redo** cover checkouts, new branches and tags, deleted local
+branches, stashes, commits and reverts made in Mangrove, as long as nothing was pushed.
 
-**Accounts.** Connect GitHub (including Enterprise Server), GitLab (including self-managed) and
-Gitea / Forgejo (Codeberg or your own server), then fetch, pull and push without being asked for a
-password or an SSH key. See [Accounts](#accounts).
+**Clone.** Paste an address, or pick one of the repositories of your accounts (they are listed as
+you type, private ones included), choose the folder, and the clone opens in place of the start page.
+
+**Accounts.** Connect GitHub (including Enterprise Server), GitLab (including self-managed),
+Gitea / Forgejo (Codeberg or your own server), Bitbucket and Azure DevOps, then clone, fetch, pull
+and push without being asked for a password or an SSH key. See [Accounts](#accounts).
 
 **Settings.** By category: General, Appearance, Git, Integrations.
 
-**And more.** Tabs, one per repository, reopened at launch. The view refreshes by itself when the
+**And more.** Tabs, one per repository, reopened at launch (on macOS also when the last window was
+closed, and from the Dock icon). The view refreshes by itself when the
 repository changes on disk. Repositories owned by another user account can be trusted for Mangrove
 only, without touching git's global configuration. If git is missing, Mangrove says how to install
 it.
@@ -129,12 +136,14 @@ it.
 
 ## Accounts
 
-- **Sign in with the browser** (github.com): Mangrove asks GitHub for a one-time code and shows it;
-  *Copy the code and open GitHub* copies it and opens the page where you paste it and authorize
-  Mangrove (scopes `repo`, `workflow`, `read:user`). Mangrove meanwhile asks GitHub every few
+- **Sign in with the browser** (github.com and gitlab.com): Mangrove asks the service for a one-time
+  code and shows it; *Copy the code and open GitHub* (or GitLab) copies it and opens the page where
+  you paste it and authorize Mangrove (on GitHub the scopes `repo`, `workflow`, `read:user`; on GitLab
+  `read_user`, `read_api`, `read_repository`, `write_repository`). Mangrove meanwhile asks every few
   seconds whether you did (the OAuth 2.0 device flow, RFC 8628, with no client secret), then gets the
-  token. Organizations that restrict OAuth apps have to approve Mangrove for their repositories, or
-  you can use a token.
+  token. GitLab's tokens expire after two hours: Mangrove keeps the token that renews them with it, and
+  renews them a few minutes before they expire. Organizations that restrict OAuth apps have to approve
+  Mangrove for their repositories, or you can use a token.
 - **Or paste a personal access token.** *Create a token* opens the service's page for a new token
   with its name and scopes filled in. The token box shows dots and won't let the token be copied.
 - **Checked before it is kept.** Mangrove asks the server whom the token belongs to (the API's
@@ -151,7 +160,14 @@ it.
   (`git@github.com:…`, `ssh://git@github.com/…`) are read as HTTPS ones for those commands
   (`url.<server>/.insteadOf`), so they need no SSH key. Other remotes work as before; when a server
   refuses an SSH key, the message suggests connecting the account.
-- GitLab stays with tokens: its OAuth tokens expire after two hours.
+- **Bitbucket** (bitbucket.org) takes an Atlassian API token with scopes (app passwords are retired):
+  `read:user`, `read:workspace` and `read:repository`, and `write:repository` to push. git sends it with
+  the user name Bitbucket asks for (`x-bitbucket-api-token-auth`), and the clone list reads the
+  repositories of each of your workspaces, as Bitbucket no longer lists them all at once.
+- **Azure DevOps** takes a personal access token of one organization, with the *Code* scope (read and
+  write); the server is the organization's address, `https://dev.azure.com/<organization>`, and its old
+  `https://<organization>.visualstudio.com` remotes use the account too. Azure's SSH addresses don't map
+  to HTTPS ones, so they keep using your SSH key.
 
 ### Mangrove's GitHub OAuth app
 
@@ -168,6 +184,19 @@ appear. To publish your own build with your own app:
    which would otherwise expire after 8 hours) and leave *Allow wildcard matching* off.
 4. Put the client ID in `kGitHubClientId`. To try another app without rebuilding, the
    `MANGROVE_GITHUB_CLIENT_ID` environment variable overrides the built-in one.
+
+### Mangrove's GitLab OAuth app
+
+Signing in to gitlab.com with the browser goes through the OAuth app *Mangrove* registered on
+gitlab.com. Its *Application ID* is `kGitLabClientId` in `src/core/accounts.cpp` (public, like
+GitHub's); while it is empty, GitLab accounts connect with a token only. To register it:
+
+1. *Edit profile › Applications › Add new application* (<https://gitlab.com/-/user_settings/applications>).
+2. *Redirect URI*: `http://127.0.0.1/` (the device flow doesn't use it, but the field is required).
+3. Untick **Confidential**, tick **Device authorization grant**, and the scopes `read_user`,
+   `read_api`, `read_repository` and `write_repository`.
+4. Put the *Application ID* in `kGitLabClientId`. To try another app without rebuilding, the
+   `MANGROVE_GITLAB_CLIENT_ID` environment variable overrides the built-in one.
 
 ## Download
 
@@ -254,9 +283,11 @@ The styles, the icons and the keyboard shortcuts window are compiled into the pr
 
 - **`tools/coretest`** (`run.ps1` on Windows, `run.sh` on macOS and Linux): the shared core, the same
   on every platform: UTF-8/16/32 text, paths and command lines, the sidebar trees, interface texts, the
-  settings file, accounts (token checks, git's authorization environment, the credential store) and a
-  real repository created in the temporary folder and read with git (history, refs, graph, status,
-  details, diffs, line counts). On Linux the credential store is tested with `MANGROVE_TEST_SECRETS=1`,
+  settings file, accounts (token checks, git's authorization environment, the credential store, the
+  answers of the services' APIs) and real repositories created in the temporary folder: read with git
+  (history, refs, graph, status, details, diffs, line counts), then worked on through a session (tags,
+  undo and redo, deleting branches here and on a remote, discarding a submodule and a nested
+  repository) and cloned. On Linux the credential store is tested with `MANGROVE_TEST_SECRETS=1`,
   in a session with an unlocked keyring (as CI does).
 - **`tools/patchtest`** (`run.ps1` / `run.sh`): partial patches. It stages, unstages and discards every
   hunk, every line and hundreds of random selections in a throwaway repository (files without a final
@@ -265,7 +296,8 @@ The styles, the icons and the keyboard shortcuts window are compiled into the pr
 - **`tools/uitest`**: interface smoke tests. `mac-snapshots.sh`, `win-snapshots.ps1` and
   `linux-snapshots.sh` open a throwaway repository in the app, which saves pictures of its windows
   (history, diff, every settings page; on Windows in three themes) and quits; `win-single-instance.ps1`
-  and `linux-single-instance.sh` check that a second start hands its folder to the first one. On
+  and `linux-single-instance.sh` check that a second start hands its folder to the first one;
+  `mac-tabs.sh` checks the tabs macOS reopens (at launch, after the last window closed, from the Dock). On
   Windows and macOS they bring windows to the front: they are meant for CI machines. On Linux they run
   on a virtual display (Xvfb) when there is none.
 - **GitHub Actions** (`.github/workflows/build.yml`) builds the three apps on every push to `main`,
@@ -280,15 +312,16 @@ The styles, the icons and the keyboard shortcuts window are compiled into the pr
 | `src/core/git.cpp` | running git, streaming parsers, ordering, details, line counts, status, diffs and partial patches |
 | `src/core/graph.cpp` | the lanes of the commit graph |
 | `src/core/session.cpp` | `RepoSession`, an open repository: loading and refreshing, selection, details, search, queued git operations with undo and redo, diffs with line selection; results reach the interface thread as events |
-| `src/core/accounts.cpp` | GitHub, GitLab and Gitea / Forgejo accounts: the browser sign-in, token checks, git's authorization |
+| `src/core/accounts.cpp` | GitHub, GitLab, Gitea / Forgejo, Bitbucket and Azure DevOps accounts: the browser sign-in, token checks and renewal, git's authorization, the repositories of an account |
+| `src/core/clone.cpp` | cloning: the address and the folder, the accounts' repositories, the clone with its progress |
 | `src/core/present.cpp` | the texts and confirmation prompts all the interfaces show |
 | `src/core/navtree.cpp` | trees of branches, remotes, tags and files; a ref's state against its remote |
 | `src/core/settings.cpp` | the shared settings file |
 | `src/core/text.cpp` | UTF-8 and wide text, paths, dates, command lines |
 | `src/core/platform_win.cpp`, `platform_posix.cpp` | system services: processes, files, git, clocks, file watching (`ReadDirectoryChangesW` / FSEvents / inotify), HTTPS (WinHTTP / libcurl), credentials (Credential Manager / keychain / Secret Service) |
 | `src/windows/` | **the Windows app**: `app.cpp` (window, input, sidebar), `views.cpp` (painting, immediate mode with hit-test zones), `diffview.cpp`, `actions.cpp` (session events, dialogs, text fields), `settingswindow.cpp`, `instance.cpp` (one instance), `gfx.cpp` (Direct2D / DirectComposition), `theme.cpp`, `snapshots.cpp` (pictures for the tests) |
-| `src/macos/` | **the macOS app**, Objective-C++: `App.mm` (application, menus, restored tabs), `RepoWindow.mm` (window, toolbar, session events, prompts), `Sidebar.mm`, `History.mm`, `Details.mm`, `DiffView.mm`, `Preferences.mm` (Settings), `Bridge.mm` (text, colors, symbols) |
-| `src/linux/` | **the Linux app**, GTK 4 and libadwaita: `app.cpp` (application, one instance, shortcuts, pictures for the tests), `window.cpp` (windows and tabs, header bar, session events, prompts), `history.cpp`, `sidebar.cpp`, `details.cpp`, `files.cpp` (file lists), `diffview.cpp`, `preferences.cpp` (Settings), `ui.cpp` (drawing, the `Canvas` widget of the long lists, menus); `data/` (styles, icons, the shortcuts window, the menu entry, `install.sh`) |
+| `src/macos/` | **the macOS app**, Objective-C++: `App.mm` (application, menus, restored tabs), `RepoWindow.mm` (window, toolbar, session events, prompts), `Sidebar.mm`, `History.mm`, `Details.mm`, `DiffView.mm`, `Preferences.mm` (Settings), `Clone.mm` (the clone sheet), `Bridge.mm` (text, colors, symbols) |
+| `src/linux/` | **the Linux app**, GTK 4 and libadwaita: `app.cpp` (application, one instance, shortcuts, pictures for the tests), `window.cpp` (windows and tabs, header bar, session events, prompts), `history.cpp`, `sidebar.cpp`, `details.cpp`, `files.cpp` (file lists), `diffview.cpp`, `preferences.cpp` (Settings), `clone.cpp` (the clone dialog), `ui.cpp` (drawing, the `Canvas` widget of the long lists, menus); `data/` (styles, icons, the shortcuts window, the menu entry, `install.sh`) |
 | `tools/` | icons and tests |
 
 ## Configuration
@@ -308,6 +341,8 @@ Environment variables, mostly for tests:
 | `MANGROVE_CONTRAST=1` | Windows: behave as if a contrast theme were on |
 | `MANGROVE_SNAPSHOT=<folder>` | save pictures of the windows in that folder, then quit (interface tests) |
 | `MANGROVE_GITHUB_CLIENT_ID=<id>` | another GitHub OAuth app for signing in with the browser |
+| `MANGROVE_GITLAB_CLIENT_ID=<id>` | another GitLab OAuth app for signing in with the browser |
+| `MANGROVE_TABTEST=1` | macOS: close and reopen the restored tabs, log what happens, then quit (interface tests) |
 
 ## Keyboard shortcuts
 
@@ -316,6 +351,7 @@ Environment variables, mostly for tests:
 | Keys | Action |
 | --- | --- |
 | `Ctrl+O` / `Ctrl+T` / `Ctrl+W` | open a repository / new tab / close the tab |
+| `Ctrl+Shift+O` | clone a repository |
 | `Ctrl+Tab` | next tab |
 | `↑ ↓ PgUp PgDn Home End` | move through the commits (with a diff open: scroll it) |
 | `Ctrl+F` | search the history; `Enter` / `Shift+Enter` next / previous result, `Esc` clears |
@@ -335,6 +371,7 @@ Environment variables, mostly for tests:
 | Keys | Action |
 | --- | --- |
 | `⌘O` / `⌘T` / `⌘W` | open a repository / new tab / close |
+| `⇧⌘O` | clone a repository |
 | `⌘F`, `⌘G` / `⇧⌘G` | search the history, next / previous result (`↩` / `⇧↩` in the field too) |
 | `⌘1` / `⌘2` | history / uncommitted changes |
 | `⇧⌘F` / `⇧⌘P` / `⌘P` | fetch / pull / push |
@@ -354,6 +391,7 @@ Environment variables, mostly for tests:
 | Keys | Action |
 | --- | --- |
 | `Ctrl+O` / `Ctrl+T` / `Ctrl+W` | open a repository / new tab / close the tab |
+| `Shift+Ctrl+O` | clone a repository |
 | `Ctrl+N` | new window |
 | `Ctrl+Tab`, `Alt+1`…`9` | next tab, a tab by its number |
 | `↑ ↓ PgUp PgDn Home End` | move through the commits (with a diff open: scroll it) |

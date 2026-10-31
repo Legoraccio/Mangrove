@@ -157,6 +157,8 @@ TextEdit* App::EditById(int id) {
     if (id == 1) return &t->commitSummary;
     if (id == 2) return &t->commitBody;
     if (id == 4) return &t->search;
+    if (id == 5 && t->clone) return &t->cloneText;
+    if (id == 6 && t->clone) return &t->cloneFolder;
     return nullptr;
 }
 
@@ -201,7 +203,8 @@ void App::OnSessionEvent(RepoTab& t, SessionEvent e) {
                 t.gs.To(0, true);
                 t.ss.To(0, true);
                 t.ds.To(0, true);
-                t.collapsed = { L"L", L"T", L"S", L"R", L"M" };  // the sections of the navigation pane start closed
+                t.collapsed = { L"T", L"S", L"R", L"M" };  // the sections of the navigation pane start closed, but the branches
+                t.revealHead = true;                         // open on the checked-out one
             }
             SaveSettings();  // the repository moved to the top of the recent list
         }
@@ -372,6 +375,89 @@ void App::CommitBranchInput() {
         return;
     }
     inlineInput.active = false;
+    Invalidate();
+}
+
+// ============================================================================ clone
+
+void App::BeginClone() {
+    RepoTab* t = Active();
+    if (!t || !t->IsStart()) {
+        NewTab(L"");
+        t = Active();
+    }
+    if (!t) return;
+    if (!t->clone) {
+        t->clone = std::make_shared<CloneModel>();
+        t->clone->folder = DefaultCloneFolder();
+        t->cloneText.Set(L"");
+        t->cloneFolder.Set(t->clone->folder);
+        t->cs.To(0, true);
+        std::weak_ptr<RepoTab> wk = PtrOf(t);
+        t->clone->onChange = [this, wk] {
+            auto tab = wk.lock();
+            if (!tab || !tab->clone) return;
+            if (!tab->clone->cloned.empty() && tab->IsStart()) {  // cloned: the start page becomes the repository
+                const std::wstring p = NormalizePath(tab->clone->cloned);
+                tab->clone.reset();
+                if (editFocus >= 5) editFocus = 0;
+                tab->path = p;
+                tab->title = BaseName(p);
+                tab->StartLoad(false);
+                SaveSettings();
+            }
+            Invalidate();
+        };
+        t->clone->Load();
+    }
+    FocusEdit(5);
+    Invalidate();
+}
+
+void App::CloneEdited(RepoTab& t, int field) {
+    if (!t.clone || t.clone->running) return;
+    CloneModel& m = *t.clone;
+    if (field == 5) {
+        if (m.text == t.cloneText.text) return;
+        m.text = t.cloneText.text;
+        m.picked.clear();  // the list changed under it
+        t.cs.To(0, true);
+    } else {
+        m.folder = TrimW(t.cloneFolder.text);
+    }
+    m.error.clear();
+}
+
+void App::PickClone(RepoTab& t, int row) {
+    if (!t.clone || t.clone->running || row < 0 || row >= (int)cloneRows.size() || cloneRows[(size_t)row].repo < 0) return;
+    const CloneRow& r = cloneRows[(size_t)row];
+    const CloneModel::Source& src = t.clone->sources[(size_t)r.source];
+    t.clone->picked = src.repos[(size_t)r.repo].url;
+    t.clone->error.clear();
+}
+
+void App::CloneKey(RepoTab& t, UINT vk) {
+    if (!t.clone) return;
+    CloneModel& m = *t.clone;
+    if (vk == VK_ESCAPE) {
+        if (!m.running) t.clone.reset();
+        FocusEdit(0);
+    } else if (vk == VK_RETURN) {
+        CloneEdited(t, 5);
+        CloneEdited(t, 6);
+        m.Start();
+    } else if (vk == VK_UP || vk == VK_DOWN) {  // through the repositories of the list
+        int at = -1;
+        for (size_t i = 0; i < cloneRows.size(); ++i) {
+            const CloneRow& r = cloneRows[i];
+            if (r.repo >= 0 && m.sources[(size_t)r.source].repos[(size_t)r.repo].url == m.picked) at = (int)i;
+        }
+        for (int i = at + (vk == VK_UP ? -1 : 1); i >= 0 && i < (int)cloneRows.size(); i += vk == VK_UP ? -1 : 1)
+            if (cloneRows[(size_t)i].repo >= 0) {
+                PickClone(t, i);
+                break;
+            }
+    }
     Invalidate();
 }
 

@@ -1,5 +1,6 @@
-// Settings, by category: General, Appearance, Git, and Integrations: the accounts on GitHub, GitLab and Gitea /
-// Forgejo, connected by signing in with the browser (github.com) or with a token, and kept in the system keyring.
+// Settings, by category: General, Appearance, Git, and Integrations: the accounts on GitHub, GitLab, Gitea / Forgejo,
+// Bitbucket and Azure DevOps, connected by signing in with the browser (github.com, gitlab.com) or with a token, and
+// kept in the system keyring.
 
 #include "LinuxUI.h"
 
@@ -178,7 +179,7 @@ GtkWidget* GitPage(Prefs* p) {
 void ReloadAccounts(Prefs* p);
 
 // The dialog that connects an account: the service, its server, then signing in with the browser (a code to enter
-// on GitHub, where Mangrove has an OAuth app) or a token; either way the token is checked with the server.
+// on the service's site, where Mangrove has an OAuth app) or a token; either way the token is checked with the server.
 struct AddAccount {
     Prefs* prefs = nullptr;
     std::weak_ptr<bool> prefsAlive;
@@ -186,7 +187,9 @@ struct AddAccount {
     GtkWidget* stack = nullptr;
     GtkWidget* service = nullptr;
     GtkWidget* server = nullptr;
+    GtkWidget* serverGroup = nullptr;
     GtkWidget* browserGroup = nullptr;
+    GtkWidget* signInRow = nullptr;
     GtkWidget* tokenGroup = nullptr;
     GtkWidget* token = nullptr;
     GtkWidget* spinner = nullptr;
@@ -212,12 +215,19 @@ struct AddAccount {
     std::wstring Server() const { return Widen(gtk_editable_get_text(GTK_EDITABLE(server))); }
     void ServiceChanged() {
         const ForgeInfo& f = InfoOf(SelectedForge());
+        const std::string name = U8(f.name);
         gtk_editable_set_text(GTK_EDITABLE(server), U8(f.server).c_str());
+        adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(serverGroup), Esc(U8(f.serverHelp)).c_str());
         adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(tokenGroup), Esc(U8(f.tokenHelp)).c_str());
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(signInRow),
+                                    Esc("Mangrove shows a code to enter on " + name + ": once you authorize Mangrove there, the account is "
+                                        "connected, with no token to copy.").c_str());
+        gtk_label_set_text(GTK_LABEL(codeIntro), ("Enter this code on " + name + ", then authorize Mangrove:").c_str());
+        gtk_button_set_label(GTK_BUTTON(open), ("Copy Code and Open " + name).c_str());
         ShowStatus("", false);
         UpdateBrowser();
     }
-    // Signing in with the browser is offered where Mangrove has an OAuth app (github.com).
+    // Signing in with the browser is offered where Mangrove has an OAuth app (github.com, gitlab.com).
     void UpdateBrowser() { gtk_widget_set_visible(browserGroup, !signingIn && BrowserSignInAvailable(SelectedForge(), Server())); }
     void ShowStatus(const std::string& text, bool error) {
         gtk_label_set_text(GTK_LABEL(status), text.c_str());
@@ -274,7 +284,7 @@ struct AddAccount {
         ShowStatus(U8(error), true);
         gtk_widget_grab_focus(token);
     }
-    // A worker thread asks GitHub for a code, then waits for the user to authorize Mangrove on GitHub
+    // A worker thread asks the service for a code, then waits for the user to authorize Mangrove on its site
     // (src/core/accounts.cpp). Cancel goes back to the form.
     void SignIn() {
         if (busy || signingIn) return;
@@ -302,14 +312,15 @@ struct AddAccount {
             });
         }).detach();
     }
-    // The code to enter on GitHub (empty while it is being asked for), in place of the form.
+    // The code to enter on the service's site (empty while it is being asked for), in place of the form.
     void ShowCode(const std::string& c, const std::string& url) {
         signingIn = true;
         verifyUrl = url;
         gtk_stack_set_visible_child_name(GTK_STACK(stack), "code");
         for (GtkWidget* w : { codeIntro, code, open }) gtk_widget_set_visible(w, !c.empty());
         gtk_label_set_text(GTK_LABEL(code), c.c_str());
-        gtk_label_set_text(GTK_LABEL(codeStatus), c.empty() ? "Asking GitHub for a code\u2026" : "Waiting for you to authorize Mangrove on GitHub\u2026");
+        const std::string name = U8(InfoOf(SelectedForge()).name);
+        gtk_label_set_text(GTK_LABEL(codeStatus), (c.empty() ? "Asking " + name + " for a code\u2026" : "Waiting for you to authorize Mangrove on " + name + "\u2026").c_str());
         gtk_spinner_start(GTK_SPINNER(codeSpinner));
         gtk_widget_set_visible(connect, FALSE);
         if (!c.empty()) {
@@ -394,7 +405,7 @@ void OpenAddAccountDialog(Prefs* p) {
     // the form
     GtkWidget* form = adw_preferences_page_new();
     GtkWidget* g1 = adw_preferences_group_new();
-    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(g1), "Change the server for GitHub Enterprise, a self-managed GitLab or another Gitea / Forgejo server.");
+    a->serverGroup = g1;  // its description: what the server is, set with the service
     std::vector<std::string> names;
     for (const ForgeInfo& f : Forges()) names.push_back(U8(f.name));
     a->service = Combo("Service", names, 0);
@@ -407,9 +418,8 @@ void OpenAddAccountDialog(Prefs* p) {
     g_signal_connect(a->server, "changed", G_CALLBACK(+[](GtkEditable*, gpointer d) { static_cast<AddAccount*>(d)->UpdateBrowser(); }), a);
 
     a->browserGroup = adw_preferences_group_new();
-    GtkWidget* signIn = ActivatableRow("Sign In with the Browser\u2026",
-                                       "Mangrove shows a code to enter on GitHub: once you authorize Mangrove there, the account is connected, with no token to copy.",
-                                       "go-next-symbolic");
+    GtkWidget* signIn = ActivatableRow("Sign In with the Browser\u2026", "", "go-next-symbolic");  // the subtitle names the service
+    a->signInRow = signIn;
     g_signal_connect(signIn, "activated", G_CALLBACK(+[](AdwActionRow*, gpointer d) { static_cast<AddAccount*>(d)->SignIn(); }), a);
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(a->browserGroup), signIn);
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(form), ADW_PREFERENCES_GROUP(a->browserGroup));
@@ -436,19 +446,19 @@ void OpenAddAccountDialog(Prefs* p) {
     adw_preferences_group_add(ADW_PREFERENCES_GROUP(a->tokenGroup), statusRow);
     adw_preferences_page_add(ADW_PREFERENCES_PAGE(form), ADW_PREFERENCES_GROUP(a->tokenGroup));
 
-    // signing in: the code to enter on GitHub, in place of the form
+    // signing in: the code to enter on the service's site, in place of the form
     GtkWidget* codeBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_set_valign(codeBox, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_start(codeBox, 24);
     gtk_widget_set_margin_end(codeBox, 24);
     gtk_widget_set_margin_top(codeBox, 24);
     gtk_widget_set_margin_bottom(codeBox, 30);
-    a->codeIntro = gtk_label_new("Enter this code on GitHub, then authorize Mangrove:");
+    a->codeIntro = gtk_label_new("");
     gtk_label_set_wrap(GTK_LABEL(a->codeIntro), TRUE);
     a->code = gtk_label_new("");
     gtk_label_set_selectable(GTK_LABEL(a->code), TRUE);
     AddClass(a->code, "mg-code");
-    a->open = gtk_button_new_with_label("Copy Code and Open GitHub");
+    a->open = gtk_button_new_with_label("");
     AddClass(a->open, "pill suggested-action");
     gtk_widget_set_halign(a->open, GTK_ALIGN_CENTER);
     g_signal_connect(a->open, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<AddAccount*>(d)->OpenSignInPage(); }), a);

@@ -215,7 +215,11 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     NSButton* open = [NSButton buttonWithTitle:@"Open Repository…" target:nil action:@selector(openDocument:)];
     open.keyEquivalent = @"\r";
     open.controlSize = NSControlSizeLarge;
-    NSMutableArray<NSView*>* views = [NSMutableArray arrayWithObjects:icon, title, sub, open, nil];
+    NSButton* clone = [NSButton buttonWithTitle:@"Clone Repository…" target:nil action:@selector(cloneRepository:)];
+    clone.controlSize = NSControlSizeLarge;
+    NSStackView* buttons = [NSStackView stackViewWithViews:@[ open, clone ]];
+    buttons.spacing = 12;
+    NSMutableArray<NSView*>* views = [NSMutableArray arrayWithObjects:icon, title, sub, buttons, nil];
 
     const std::vector<std::wstring>& recent = AppSettings().recent;
     NSMutableArray<NSView*>* rows = [NSMutableArray array];
@@ -254,7 +258,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeCenterX;
     stack.spacing = 14;
-    [stack setCustomSpacing:28 afterView:open];
+    [stack setCustomSpacing:28 afterView:buttons];
     [stack setCustomSpacing:4 afterView:title];
     [stack setCustomSpacing:22 afterView:sub];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -905,6 +909,10 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
 
 // ---- commands
 
+- (IBAction)cloneRepository:(id)sender {
+    if (!self.window.attachedSheet) [[[MGCloneSheet alloc] initWithOwner:self] begin];
+}
+
 - (IBAction)fetch:(id)sender {
     if (_session) _session->Fetch();
 }
@@ -1072,6 +1080,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     if (a == @selector(copy:)) return repo && !s->selWip && s->selCommit >= 0;
     if (a == @selector(toggleDetails:)) return _detailItem != nil;
     if (a == @selector(closeDiff:)) return repo && s->diff.open;
+    if (a == @selector(cloneRepository:)) return self.window.attachedSheet == nil;
     return YES;
 }
 

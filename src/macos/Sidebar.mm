@@ -211,27 +211,52 @@ static NSString* AheadBehind(const Ref& r) {
     }
 }
 
-// The checked-out branch is visible after the first load, even inside folders.
-- (void)revealHeadBranch {
+// The checked-out branch comes into view, its group and folders opened (and kept open); nil when HEAD is on none.
+- (MGSideItem*)revealHeadBranch {
     RepoSession* s = _owner.session;
+    if (!s || !s->data) return nil;
     for (MGSideItem* group in _roots) {
         if (![group.key isEqualToString:@"branches"]) continue;
         NSMutableArray<MGSideItem*>* path = [NSMutableArray array];
-        if ([self findHead:group session:s path:path])
-            for (MGSideItem* it in path) [_outline expandItem:it];
+        MGSideItem* head = [self findHead:group session:s path:path];
+        if (!head) return nil;
+        [_collapsedGroups removeObject:group.key];
+        [_outline expandItem:group];
+        for (MGSideItem* it in path) {
+            [_expandedFolders addObject:it.key];
+            [_outline expandItem:it];
+        }
+        // Once the rows have their place (the first load comes before the window's layout).
+        dispatch_async(dispatch_get_main_queue(), ^{
+            const NSInteger row = [self->_outline rowForItem:head];
+            if (row >= 0) [self->_outline scrollRowToVisible:row];
+        });
+        return head;
     }
+    return nil;
 }
 
-- (BOOL)findHead:(MGSideItem*)item session:(RepoSession*)s path:(NSMutableArray<MGSideItem*>*)path {
+- (MGSideItem*)findHead:(MGSideItem*)item session:(RepoSession*)s path:(NSMutableArray<MGSideItem*>*)path {
     for (MGSideItem* c in item.children) {
-        if (c.kind == MGSideBranch && s->data->refs[(size_t)c.index].head) return YES;
+        if (c.kind == MGSideBranch && s->data->refs[(size_t)c.index].head) return c;
         if (c.kind == MGSideFolder) {
             [path addObject:c];
-            if ([self findHead:c session:s path:path]) return YES;
+            if (MGSideItem* found = [self findHead:c session:s path:path]) return found;
             [path removeLastObject];
         }
     }
-    return NO;
+    return nil;
+}
+
+// The button of the Branches group: the checked-out branch comes into view and is picked, as a click on it does.
+- (void)showHeadBranch:(id)sender {
+    _syncing = YES;
+    MGSideItem* head = [self revealHeadBranch];
+    const NSInteger row = head ? [_outline rowForItem:head] : -1;
+    if (row >= 0) [_outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    _syncing = NO;
+    const int32_t c = head ? [self commitOf:head] : -1;
+    if (c >= 0) [_owner selectCommit:c];
 }
 
 - (MGSideItem*)itemWithKey:(NSString*)key among:(NSArray<MGSideItem*>*)items {
@@ -308,10 +333,13 @@ static NSString* AheadBehind(const Ref& r) {
 - (NSView*)outlineView:(NSOutlineView*)ov viewForTableColumn:(NSTableColumn*)col item:(id)item {
     MGSideItem* it = item;
     if (it.kind == MGSideGroup) {
-        NSTableCellView* v = [ov makeViewWithIdentifier:@"group" owner:self];
+        // Branches has a button after its title that shows the checked-out branch (the group's own control is at the right).
+        const BOOL branches = [it.key isEqualToString:@"branches"];
+        NSString* ident = branches ? @"branchesGroup" : @"group";
+        NSTableCellView* v = [ov makeViewWithIdentifier:ident owner:self];
         if (!v) {
             v = [[NSTableCellView alloc] init];
-            v.identifier = @"group";
+            v.identifier = ident;
             NSTextField* t = MakeLabel(@"", [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold], NSColor.secondaryLabelColor);
             t.translatesAutoresizingMaskIntoConstraints = NO;
             [v addSubview:t];
@@ -321,8 +349,24 @@ static NSString* AheadBehind(const Ref& r) {
                 [t.trailingAnchor constraintLessThanOrEqualToAnchor:v.trailingAnchor],
                 [t.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
             ]];
+            if (branches) {
+                NSButton* locate = [NSButton buttonWithImage:Symbol(@"scope", 11, NSFontWeightRegular) target:self action:@selector(showHeadBranch:)];
+                locate.bordered = NO;
+                locate.contentTintColor = NSColor.secondaryLabelColor;
+                locate.toolTip = @"Show the current branch";
+                locate.tag = 1;
+                locate.translatesAutoresizingMaskIntoConstraints = NO;
+                [v addSubview:locate];
+                [NSLayoutConstraint activateConstraints:@[
+                    [locate.leadingAnchor constraintEqualToAnchor:t.trailingAnchor constant:6],
+                    [locate.trailingAnchor constraintLessThanOrEqualToAnchor:v.trailingAnchor],
+                    [locate.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
+                ]];
+            }
         }
         v.textField.stringValue = it.title;
+        RepoSession* s = _owner.session;
+        [v viewWithTag:1].hidden = !(s && s->data && !s->data->headBranch.empty());
         return v;
     }
     MGSideCell* v = [ov makeViewWithIdentifier:@"item" owner:self];

@@ -440,6 +440,22 @@ static void CountRows(NSView* v, NSMutableArray<NSString*>* out) {
     }
     case 22:
         [[MGPreferencesController shared] closeSheets];
+        [[MGPreferencesController shared].window orderOut:nil];
+        after(0.5, 23, 0);
+        return;
+    case 23:  // the clone sheet; the account has no token in the keychain: its list says so
+        [c.window makeKeyAndOrderFront:nil];
+        [c cloneRepository:nil];
+        after(2.5, 24, 0);
+        return;
+    case 24: {
+        NSWindow* sheet = c.window.attachedSheet;
+        [self snapshotWindow:sheet ? sheet : c.window name:@"11-clone.png"];
+        after(2.5, 25, 0);
+        return;
+    }
+    case 25:
+        if (NSWindow* sheet = c.window.attachedSheet) [c.window endSheet:sheet];
         after(0.5, 99, 0);
         return;
     default:
@@ -476,6 +492,13 @@ static void CountRows(NSView* v, NSMutableArray<NSString*>* out) {
     };
     if (origin.window.visible) [panel beginSheetModalForWindow:origin.window completionHandler:done];
     else [panel beginWithCompletionHandler:done];
+}
+
+// Only with no window open: a window's controller answers first.
+- (IBAction)cloneRepository:(id)sender {
+    MGRepoWindowController* c = [self newController:nil];
+    [c showWindow:nil];
+    [c cloneRepository:sender];
 }
 
 - (void)openRecent:(NSMenuItem*)item {
@@ -543,6 +566,7 @@ static void CountRows(NSView* v, NSMutableArray<NSString*>* out) {
     Item(file, @"New Window", @selector(newWindow:), @"n");
     Item(file, @"New Tab", @selector(newWindowForTab:), @"t");
     Item(file, @"Open…", @selector(openDocument:), @"o");
+    Item(file, @"Clone Repository…", @selector(cloneRepository:), @"o", kCmd | kShift);
     _recent = Submenu(file, @"Open Recent");
     _recent.delegate = self;
     [file addItem:NSMenuItem.separatorItem];

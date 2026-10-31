@@ -1,9 +1,9 @@
 // The Settings window: Mangrove's preferences by category, laid out like the Windows 11 Settings app (a
-// navigation pane, pages of cards). General, Appearance and Git, and Integrations: the accounts on GitHub,
-// GitLab and Gitea / Forgejo that fetch, pull and push use over HTTPS. An account connects by signing in with
-// the browser (github.com: a code to enter on GitHub) or with a token pasted in a box that shows dots and never
-// copies it; either way the token is checked with its server, then kept in Windows Credential Manager
-// (src\core\accounts.cpp).
+// navigation pane, pages of cards). General, Appearance and Git, and Integrations: the accounts on GitHub, GitLab,
+// Gitea / Forgejo, Bitbucket and Azure DevOps that fetch, pull, push and clone use over HTTPS. An account connects by
+// signing in with the browser (github.com and gitlab.com: a code to enter on the service's site) or with a token
+// pasted in a box that shows dots and never copies it; either way the token is checked with its server, then kept
+// in Windows Credential Manager (src\core\accounts.cpp).
 
 #include "app.h"
 #include "theme.h"
@@ -46,10 +46,11 @@ const th::Theme kThemes[] = { th::Theme::System, th::Theme::Light, th::Theme::Da
 const std::vector<std::wstring> kThemeLabels = { L"Windows (system setting)", L"Windows light", L"Windows dark",
                                                  L"Mangrove (navy and gold)" };
 const std::vector<std::wstring> kDiffLabels = { L"Unified", L"Side by side" };
-constexpr wchar_t kServerHelp[] = L"Change it for GitHub Enterprise, a self-managed GitLab or another Gitea / Forgejo server.";
-constexpr wchar_t kBrowserHelp[] =
-    L"Mangrove shows a code to enter on GitHub: once you authorize Mangrove there, the account is connected, with no token to copy.";
-constexpr wchar_t kCodeHelp[] = L"Enter this code on GitHub, then authorize Mangrove:";
+// Signing in with the browser, said of a service ("GitHub").
+std::wstring BrowserHelp(const wchar_t* service) {
+    return std::wstring(L"Mangrove shows a code to enter on ") + service +
+           L": once you authorize Mangrove there, the account is connected, with no token to copy.";
+}
 
 RectF Intersect(const RectF& a, const RectF& b) {
     const float x0 = std::max(a.x, b.x), y0 = std::max(a.y, b.y);
@@ -820,12 +821,14 @@ void SettingsWindow::PaintAddAccount(float& y) {
         g.Glyph(0xE8A7, { r.r() - DR(30), r.y, DR(20), r.h }, F::Icon12, !enabled ? TextDim : style == 1 ? TextOnAccent : TextSec);
         if (enabled) AddZone(r, id);
     };
-    const std::wstring createLabel = L"Create a token", browserLabel = L"Sign in with the browser", openLabel = L"Copy the code and open GitHub";
+    const std::wstring createLabel = L"Create a token", browserLabel = L"Sign in with the browser",
+                       openLabel = std::wstring(L"Copy the code and open ") + forge.name;
     float serverHelpH = 0, browserHelpH = 0, tokenHelpH = 0, statusH = 0, codeHelpH = 0;
-    const ComPtr<IDWriteTextLayout> serverHelp = wrap(kServerHelp, fw, serverHelpH);
-    const ComPtr<IDWriteTextLayout> browserHelp = browser ? wrap(kBrowserHelp, fw, browserHelpH) : nullptr;
+    const ComPtr<IDWriteTextLayout> serverHelp = wrap(forge.serverHelp, fw, serverHelpH);
+    const ComPtr<IDWriteTextLayout> browserHelp = browser ? wrap(BrowserHelp(forge.name), fw, browserHelpH) : nullptr;
     const ComPtr<IDWriteTextLayout> tokenHelp = signIn == kSignInIdle ? wrap(forge.tokenHelp, fw, tokenHelpH) : nullptr;
-    const ComPtr<IDWriteTextLayout> codeHelp = signIn == kSignInWaiting ? wrap(kCodeHelp, fw, codeHelpH) : nullptr;
+    const ComPtr<IDWriteTextLayout> codeHelp =
+        signIn == kSignInWaiting ? wrap(std::wstring(L"Enter this code on ") + forge.name + L", then authorize Mangrove:", fw, codeHelpH) : nullptr;
     const float connectW = DR(112);
     const float statusX = fx + connectW + DR(12) + (busy ? DR(26) : 0.f);
     const ComPtr<IDWriteTextLayout> statusL =
@@ -880,13 +883,13 @@ void SettingsWindow::PaintAddAccount(float& y) {
     }
     cy += hServer;
 
-    if (signIn != kSignInIdle) {  // signing in: the code to enter on GitHub while Mangrove waits for the authorization
+    if (signIn != kSignInIdle) {  // signing in: the code to enter on the service's site while Mangrove waits for the authorization
         cy += DR(18);
         label(L"Sign in", cy);
         float sy = cy + labelH;
         if (signIn == kSignInStarting) {
             DrawSpinner(g, fx + DR(9), sy + DR(16), DR(7));
-            g.Text(L"Asking GitHub for a code\u2026", { fx + DR(26), sy, fw - DR(26), DR(32) }, F::UI, TextSec);
+            g.Text(std::wstring(L"Asking ") + forge.name + L" for a code\u2026", { fx + DR(26), sy, fw - DR(26), DR(32) }, F::UI, TextSec);
             cancelButton({ fx, sy + DR(32) + DR(12), cancelW, DR(32) });
             return;
         }
@@ -903,7 +906,8 @@ void SettingsWindow::PaintAddAccount(float& y) {
         cancelButton(cancel);
         sy = cancel.b() + DR(12);
         DrawSpinner(g, fx + DR(9), sy + DR(10), DR(7));
-        g.Text(L"Waiting for you to authorize Mangrove on GitHub\u2026", { fx + DR(26), sy, fw - DR(26), DR(20) }, F::UI, TextSec);
+        g.Text(std::wstring(L"Waiting for you to authorize Mangrove on ") + forge.name + L"\u2026", { fx + DR(26), sy, fw - DR(26), DR(20) }, F::UI,
+               TextSec);
         return;
     }
 
@@ -1267,8 +1271,8 @@ void SettingsWindow::Connected(const TokenCheck& check, const std::string& tok, 
     Invalidate();
 }
 
-// Signing in with the browser: a worker thread asks GitHub for a code, then waits for the user to authorize
-// Mangrove on GitHub (src\core\accounts.cpp). Cancelling, or closing the window, leaves it to stop by itself.
+// Signing in with the browser: a worker thread asks the service for a code, then waits for the user to authorize
+// Mangrove on its site (src\core\accounts.cpp). Cancelling, or closing the window, leaves it to stop by itself.
 void SettingsWindow::StartSignIn() {
     if (busy || signIn != kSignInIdle) return;
     const Forge f = Forges()[(size_t)service].forge;

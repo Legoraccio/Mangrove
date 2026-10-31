@@ -1,6 +1,6 @@
 // Settings: the preferences by category in the standard settings window, a toolbar of panes. General,
-// Appearance, Git, and Integrations: the accounts on GitHub, GitLab and Gitea / Forgejo, connected by signing in
-// with the browser (github.com) or with a token, and kept in the keychain.
+// Appearance, Git, and Integrations: the accounts on GitHub, GitLab, Gitea / Forgejo, Bitbucket and Azure DevOps,
+// connected by signing in with the browser (github.com, gitlab.com) or with a token, and kept in the keychain.
 
 #import "MacUI.h"
 
@@ -303,8 +303,8 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
 
 @end
 
-// The sheet that connects an account: the service, its server, then signing in with the browser (a code to
-// enter on GitHub, where Mangrove has an OAuth app) or a token; either way the token is checked with the server.
+// The sheet that connects an account: the service, its server, then signing in with the browser (a code to enter
+// on the service's site, where Mangrove has an OAuth app) or a token; either way the token is checked with the server.
 @interface MGAddAccountController : NSWindowController <NSTextFieldDelegate>
 - (instancetype)initWithDone:(void (^)(NSString* note))done;
 - (void)showSampleCode;  // the code view without asking GitHub (interface test)
@@ -314,6 +314,7 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     void (^_done)(NSString*);
     NSPopUpButton* _service;
     NSTextField* _server;
+    NSTextField* _serverHelp;
     NSTextField* _help;
     NSSecureTextField* _token;
     NSProgressIndicator* _spinner;
@@ -324,6 +325,7 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     // signing in with the browser
     NSGridView* _grid;
     NSButton* _browser;
+    NSTextField* _browserHelp;
     NSStackView* _codeView;
     NSTextField* _codeIntro;
     NSTextField* _code;
@@ -358,6 +360,8 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     _browser = [NSButton buttonWithTitle:@"Sign In with Browser…" target:self action:@selector(signIn:)];
     NSButton* create = [NSButton buttonWithTitle:@"Create a Token…" target:self action:@selector(createToken:)];
     _help = HelpLabel(@"", 320);
+    _serverHelp = HelpLabel(@"", 320);
+    _browserHelp = HelpLabel(@"", 320);
     _token = [[NSSecureTextField alloc] init];
     _token.placeholderString = @"Paste the token here";
     [_token.widthAnchor constraintEqualToConstant:320].active = YES;
@@ -372,21 +376,20 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     _grid = Grid(@[
         @[ RowLabel(@"Service:"), _service ],
         @[ RowLabel(@"Server:"), _server ],
-        @[ NSGridCell.emptyContentView, HelpLabel(@"Change it for GitHub Enterprise, a self-managed GitLab or another Gitea / Forgejo server.", 320) ],
+        @[ NSGridCell.emptyContentView, _serverHelp ],
         @[ RowLabel(@"Sign in:"), _browser ],
-        @[ NSGridCell.emptyContentView, HelpLabel(@"Mangrove shows a code to enter on GitHub: once you authorize Mangrove there, the "
-                                                  @"account is connected, with no token to copy.", 320) ],
+        @[ NSGridCell.emptyContentView, _browserHelp ],
         @[ RowLabel(@"Token:"), create ],
         @[ NSGridCell.emptyContentView, _help ],
         @[ NSGridCell.emptyContentView, _token ],
         @[ NSGridCell.emptyContentView, status ],
     ]);
 
-    // Signing in: the code to enter on GitHub, in place of the token.
-    _codeIntro = MakeLabel(@"Enter this code on GitHub, then authorize Mangrove:", nil, nil);
+    // Signing in: the code to enter on the service's site, in place of the token (texts set by serviceChanged:).
+    _codeIntro = MakeLabel(@"", nil, nil);
     _code = MakeLabel(@"", [NSFont monospacedSystemFontOfSize:26 weight:NSFontWeightSemibold], NSColor.labelColor);
     _code.selectable = YES;
-    _open = [NSButton buttonWithTitle:@"Copy Code and Open GitHub" target:self action:@selector(openSignInPage:)];
+    _open = [NSButton buttonWithTitle:@"" target:self action:@selector(openSignInPage:)];
     _codeSpinner = [[NSProgressIndicator alloc] init];
     _codeSpinner.style = NSProgressIndicatorStyleSpinning;
     _codeSpinner.controlSize = NSControlSizeSmall;
@@ -430,13 +433,19 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
 
 - (void)serviceChanged:(id)sender {
     const ForgeInfo& f = InfoOf([self forge]);
+    NSString* name = NS(f.name);
     _server.stringValue = NS(f.server);
+    _serverHelp.stringValue = NS(f.serverHelp);
     _help.stringValue = NS(f.tokenHelp);
+    _browserHelp.stringValue =
+        [NSString stringWithFormat:@"Mangrove shows a code to enter on %@: once you authorize Mangrove there, the account is connected, with no token to copy.", name];
+    _codeIntro.stringValue = [NSString stringWithFormat:@"Enter this code on %@, then authorize Mangrove:", name];
+    _open.title = [@"Copy Code and Open " stringByAppendingString:name];
     _status.stringValue = @"";
     [self updateBrowser];
 }
 
-// Signing in with the browser is offered where Mangrove has an OAuth app (github.com).
+// Signing in with the browser is offered where Mangrove has an OAuth app (github.com, gitlab.com).
 - (void)updateBrowser {
     const BOOL available = !_signingIn && BrowserSignInAvailable([self forge], WS(_server.stringValue));
     [_grid rowAtIndex:3].hidden = !available;
@@ -500,7 +509,7 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     [self.window makeFirstResponder:_token];
 }
 
-// A worker thread asks GitHub for a code, then waits for the user to authorize Mangrove on GitHub
+// A worker thread asks the service for a code, then waits for the user to authorize Mangrove on its site
 // (src/core/accounts.cpp). Cancel goes back to the form.
 - (void)signIn:(id)sender {
     if (_busy || _signingIn) return;
@@ -529,7 +538,7 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     }).detach();
 }
 
-// The code to enter on GitHub (nil while it is being asked for), in place of the token.
+// The code to enter on the service's site (nil while it is being asked for), in place of the token.
 - (void)showCode:(NSString*)code url:(NSString*)url {
     _signingIn = YES;
     _verifyUrl = url;
@@ -538,7 +547,9 @@ static NSGridView* Grid(NSArray<NSArray<NSView*>*>* rows) {
     _codeView.hidden = NO;
     _codeIntro.hidden = _code.hidden = _open.hidden = code == nil;
     _code.stringValue = code ?: @"";
-    _codeStatus.stringValue = code ? @"Waiting for you to authorize Mangrove on GitHub…" : @"Asking GitHub for a code…";
+    NSString* name = NS(InfoOf([self forge]).name);
+    _codeStatus.stringValue = code ? [NSString stringWithFormat:@"Waiting for you to authorize Mangrove on %@…", name]
+                                   : [NSString stringWithFormat:@"Asking %@ for a code…", name];
     [_codeSpinner startAnimation:nil];
     _connect.hidden = YES;
     _connect.keyEquivalent = @"";
