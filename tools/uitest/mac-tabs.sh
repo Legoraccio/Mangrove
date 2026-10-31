@@ -1,7 +1,8 @@
 #!/bin/bash
-# The tabs of the previous session on macOS: two repositories saved as tabs reopen in one window, closing that
-# window with its close button keeps them saved, and the Dock icon reopens them (MANGROVE_TABTEST makes the app
-# take these steps and log them). Fails when one of them doesn't happen, or when the app crashes or hangs.
+# The tabs of the previous session on macOS: two repositories saved as tabs reopen in one window; the close button
+# closes the tab on screen, forgotten while another stays open; the last one closed stays saved and the Dock icon
+# reopens it; quitting keeps every tab (MANGROVE_TABTEST makes the app take these steps and log them). Fails when
+# one of them doesn't happen, or when the app crashes or hangs.
 #
 #   ./tools/uitest/mac-tabs.sh
 set -euo pipefail
@@ -35,8 +36,10 @@ fi
 cat "$work/app.log"
 expect() { grep -q "tabtest: $1" "$work/app.log" || { echo "Expected \"$1\"" >&2; status=1; }; }
 expect "restored 2 repositories in 2 tabs"
-expect "after the close button 0 repositories are open, 2 saved"
-expect "reopened 2 repositories"
+expect "after closing a tab 1 repositories are open, 1 saved"
+expect "after closing the last one 0 repositories are open, 1 saved"
+expect "the Dock icon reopened 1 repositories"
+expect "quitting with 2 repositories open"
 saved="$(tr -d '\r' <"$settings" | grep -c '^tab=' || true)"  # the app writes CRLF line ends
 [ "$saved" = 2 ] || { echo "The settings keep $saved tabs, not 2." >&2; status=1; }
 exit "$status"

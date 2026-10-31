@@ -213,8 +213,9 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
 
 // ---- the tabs of the previous session (test)
 
-// MANGROVE_TABTEST: the repositories saved as tabs reopen in one window; its close button closes them and they stay
-// saved; the Dock icon brings them back. Each step is logged ("tabtest: ..."), then the app quits, and
+// MANGROVE_TABTEST: the repositories saved as tabs reopen in one window. The close button closes the tab on screen
+// (AppKit closes only that one): with another tab open it is forgotten, the last one stays saved, and the Dock icon
+// reopens it; quitting keeps every tab. Each step is logged ("tabtest: ..."), then the app quits, and
 // tools/uitest/mac-tabs.sh checks the log and the settings file.
 - (int)openRepositories {
     int n = 0;
@@ -222,28 +223,49 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
     return n;
 }
 
+- (void)tabTestClose {
+    for (MGRepoWindowController* c in _windows) {
+        if ([_closing containsObject:c]) continue;
+        NSWindow* shown = c.window.tabGroup.selectedWindow ? c.window.tabGroup.selectedWindow : c.window;
+        [[shown standardWindowButton:NSWindowCloseButton] performClick:nil];
+        return;
+    }
+}
+
 - (void)tabTestStep:(int)step {
+    static std::vector<std::wstring> saved;  // the tabs at launch
     void (^after)(int) = ^(int next) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self tabTestStep:next];
         });
     };
+    const int open = [self openRepositories], kept = (int)AppSettings().tabs.size();
     switch (step) {
     case 0: {
+        saved = AppSettings().tabs;
         NSWindow* w = _windows.firstObject.window;
-        NSLog(@"tabtest: restored %d repositories in %lu tabs", [self openRepositories], (unsigned long)std::max<NSUInteger>(1, w.tabbedWindows.count));
-        NSWindow* shown = w.tabGroup.selectedWindow ? w.tabGroup.selectedWindow : w;  // the tab on screen, whose close button one sees
-        [[shown standardWindowButton:NSWindowCloseButton] performClick:nil];
+        NSLog(@"tabtest: restored %d repositories in %lu tabs", open, (unsigned long)std::max<NSUInteger>(1, w.tabbedWindows.count));
+        [self tabTestClose];
         after(1);
         return;
     }
     case 1:
-        NSLog(@"tabtest: after the close button %d repositories are open, %d saved", [self openRepositories], (int)AppSettings().tabs.size());
-        [self applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];  // the Dock icon
+        NSLog(@"tabtest: after closing a tab %d repositories are open, %d saved", open, kept);
+        [self tabTestClose];
         after(2);
         return;
+    case 2:
+        NSLog(@"tabtest: after closing the last one %d repositories are open, %d saved", open, kept);
+        [self applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];  // the Dock icon
+        after(3);
+        return;
+    case 3:
+        NSLog(@"tabtest: the Dock icon reopened %d repositories", open);
+        for (const std::wstring& p : saved) [self openRepository:NS(p) from:[self keyController]];
+        after(4);
+        return;
     default:
-        NSLog(@"tabtest: reopened %d repositories", [self openRepositories]);
+        NSLog(@"tabtest: quitting with %d repositories open", open);
         [NSApp terminate:nil];
     }
 }
