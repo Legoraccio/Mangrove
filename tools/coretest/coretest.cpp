@@ -169,6 +169,12 @@ static void TestAccounts(const std::filesystem::path& dir) {
     const DevicePoll gitlab = ParseDevicePoll(200, R"({"access_token":"t0k","token_type":"Bearer","expires_in":7200,"refresh_token":"r3f","scope":"read_api","created_at":1793443529})", L"GitLab");
     CHECK(gitlab.state == DeviceState::Granted && gitlab.token == "t0k" && gitlab.refreshToken == "r3f" && gitlab.expiresIn == 7200);
     CHECK(ParseDevicePoll(400, R"({"error":"invalid_client"})", L"GitLab").error.find(L"GitLab") == 0);
+    // gitlab.com's answers to Mangrove's app (2026-10-31): the code, then "not yet" with status 400.
+    const DeviceCode glCode = ParseDeviceCode(200, R"({"device_code":"Hm8dR2xq0YbS","user_code":"SV96G9BW","verification_uri":"https://gitlab.com/oauth/device",
+        "verification_uri_complete":"https://gitlab.com/oauth/device?user_code=SV96G9BW","expires_in":300,"interval":5})", L"GitLab");
+    CHECK(glCode.error.empty() && glCode.userCode == L"SV96G9BW" && glCode.verifyUrl == L"https://gitlab.com/oauth/device" && glCode.expiresIn == 300);
+    CHECK(ParseDevicePoll(400, R"({"error":"authorization_pending","error_description":"The authorization server encountered an unexpected condition which prevented it from fulfilling the request."})",
+                          L"GitLab").state == DeviceState::Pending);
     const DeviceCode code = ParseDeviceCode(200, R"({"device_code":"3584d83530557fdd1f46af8289938c8ef79f9dc5","user_code":"WDJB-MJHT",
         "verification_uri":"https:\/\/github.com\/login\/device","expires_in":900,"interval":5})");
     CHECK(code.error.empty() && code.deviceCode == "3584d83530557fdd1f46af8289938c8ef79f9dc5" && code.userCode == L"WDJB-MJHT" &&

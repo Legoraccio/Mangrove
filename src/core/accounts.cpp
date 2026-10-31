@@ -232,7 +232,7 @@ std::wstring Lower(std::wstring s) {
 // not confidential, with the device authorization grant; its tokens expire after two hours and Mangrove renews them.
 // The device flow needs no client secret, and a client ID is public. Empty: no signing in with the browser.
 constexpr char kGitHubClientId[] = "Ov23li3hoJcbPe6kwo7l";
-constexpr char kGitLabClientId[] = "";
+constexpr char kGitLabClientId[] = "c5d5f1708159374234c90369b3de3f492291b220d09eb6eebc37458e5fd35d67";
 
 // The client ID in use: MANGROVE_GITHUB_CLIENT_ID or MANGROVE_GITLAB_CLIENT_ID (another OAuth app, to try it), or
 // Mangrove's.

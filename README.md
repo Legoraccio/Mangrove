@@ -189,7 +189,8 @@ appear. To publish your own build with your own app:
 
 Signing in to gitlab.com with the browser goes through the OAuth app *Mangrove* registered on
 gitlab.com. Its *Application ID* is `kGitLabClientId` in `src/core/accounts.cpp` (public, like
-GitHub's); while it is empty, GitLab accounts connect with a token only. To register it:
+GitHub's); without one, GitLab accounts connect with a token only. To publish your own build with
+your own app:
 
 1. *Edit profile › Applications › Add new application* (<https://gitlab.com/-/user_settings/applications>).
 2. *Redirect URI*: `http://127.0.0.1/` (the device flow doesn't use it, but the field is required).
