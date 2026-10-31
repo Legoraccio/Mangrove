@@ -416,7 +416,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
 
 - (void)openRepository:(NSString*)path {
     _session = std::make_shared<RepoSession>();
-    _session->path = NormalizePath(WS(path));
+    _session->path = NormalizePath(WS(path.stringByStandardizingPath));  // as controllerFor: compares it ("a//b" is "a/b")
     _session->title = BaseName(_session->path);
     __weak MGRepoWindowController* weakSelf = self;
     _session->onEvent = [weakSelf](SessionEvent e) { [weakSelf sessionEvent:e]; };
