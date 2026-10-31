@@ -232,7 +232,8 @@ static constexpr NSEventModifierFlags kCmd = NSEventModifierFlagCommand, kShift 
     case 0: {
         NSWindow* w = _windows.firstObject.window;
         NSLog(@"tabtest: restored %d repositories in %lu tabs", [self openRepositories], (unsigned long)std::max<NSUInteger>(1, w.tabbedWindows.count));
-        [[w standardWindowButton:NSWindowCloseButton] performClick:nil];
+        NSWindow* shown = w.tabGroup.selectedWindow ? w.tabGroup.selectedWindow : w;  // the tab on screen, whose close button one sees
+        [[shown standardWindowButton:NSWindowCloseButton] performClick:nil];
         after(1);
         return;
     }
