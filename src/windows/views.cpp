@@ -674,7 +674,7 @@ void App::PaintNav(RepoTab& t) {
     t.ss.view = list.h;
     t.ss.content = t.side.empty() ? 0.0 : (double)DR(t.side.back().top + t.side.back().h) + DR(8);
     t.ss.Clamp();
-    if (t.revealHead) {  // the checked-out branch comes into view, a third of the way down
+    if (t.revealHead && !compact) {  // the checked-out branch comes into view, a third of the way down, once the pane lists it
         t.revealHead = false;
         for (const SideItem& it : t.side)
             if (it.kind == SideKind::Branch && it.section == 0 && it.head) {

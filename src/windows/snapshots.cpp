@@ -145,6 +145,12 @@ void Step() {
         return Next(12, 2500);
     case 12:
         SaveWindow(g_app->hwnd, L"12-clone.png");
+        g_app->ActivateTab(0);  // the repository, zoomed out: the window is too narrow for the navigation pane's lists
+        g_app->SetZoom(0.8f);
+        return Next(13, 1500);
+    case 13:
+        SaveWindow(g_app->hwnd, L"13-sidebar.png");
+        g_app->SetZoom(1.f);
         Log(L"done");
         PostMessageW(g_app->hwnd, WM_CLOSE, 0, 0);
         return;

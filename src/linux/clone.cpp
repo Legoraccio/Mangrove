@@ -64,7 +64,8 @@ void Clone::Fill() {
         GtkWidget* head = gtk_list_box_row_new();
         gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(head), FALSE);
         gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(head), FALSE);
-        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+        // an error goes below the account, so that the account keeps its room
+        GtkWidget* box = gtk_box_new(src.error.empty() ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL, src.error.empty() ? 12 : 4);
         gtk_widget_set_margin_start(box, 12);
         gtk_widget_set_margin_end(box, 12);
         gtk_widget_set_margin_top(box, 8);
@@ -78,7 +79,7 @@ void Clone::Fill() {
         GtkWidget* note = MakeLabel(U8(state), src.error.empty() ? "dim-label" : "error");
         gtk_label_set_wrap(GTK_LABEL(note), TRUE);
         gtk_label_set_ellipsize(GTK_LABEL(note), PANGO_ELLIPSIZE_NONE);
-        gtk_label_set_xalign(GTK_LABEL(note), 1);
+        gtk_label_set_xalign(GTK_LABEL(note), src.error.empty() ? 1 : 0);
         gtk_box_append(GTK_BOX(box), who);
         gtk_box_append(GTK_BOX(box), note);
         gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(head), box);
