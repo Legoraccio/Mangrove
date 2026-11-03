@@ -1642,6 +1642,17 @@ void App::ShowFileMenu(RepoTab& t, int section, int row, float x, float y) {
     Invalidate();
 }
 
+// The tags of a commit, each to each remote, after a separator: commands from kPushTagCmd.
+static constexpr int kPushTagCmd = 30;
+
+static void AppendPushTagItems(HMENU m, const std::vector<PushTagChoice>& pushes, UINT busy) {
+    if (!pushes.empty()) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    for (size_t k = 0; k < pushes.size(); ++k) {
+        const std::wstring label = L"Push tag " + pushes[k].tag + L" to " + pushes[k].remote;
+        AppendMenuW(m, MF_STRING | busy, kPushTagCmd + k, label.c_str());
+    }
+}
+
 void App::ShowRefMenu(RepoTab& t, int ri, float x, float y) {
     if (!t.data || ri < 0 || ri >= (int)t.data->refs.size()) return;
     const RepoData& d = *t.data;
@@ -1660,6 +1671,8 @@ void App::ShowRefMenu(RepoTab& t, int ri, float x, float y) {
     }
     AppendMenuW(m, MF_STRING | busy | (r.commit < 0 ? MF_GRAYED : 0), 2, L"Create branch here\u2026");
     AppendMenuW(m, MF_STRING | busy | (r.commit < 0 ? MF_GRAYED : 0), 4, L"Create tag here\u2026");
+    const std::vector<PushTagChoice> pushes = PushTagChoices(t, r.commit, ri);
+    AppendPushTagItems(m, pushes, busy);
     const std::vector<DeleteChoice> deletes = DeleteChoices(t, ri);  // the branch here, the remote one, both
     if (!deletes.empty()) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     for (size_t k = 0; k < deletes.size(); ++k)
@@ -1678,6 +1691,7 @@ void App::ShowRefMenu(RepoTab& t, int ri, float x, float y) {
     case 3: CopyToClipboard(hwnd, r.name); break;
     default:
         if (cmd >= 10 && cmd < 10 + (int)deletes.size()) DoDeleteBranch(t, deletes[(size_t)cmd - 10].local, deletes[(size_t)cmd - 10].remote);
+        else if (cmd >= kPushTagCmd && cmd < kPushTagCmd + (int)pushes.size()) t.PushTag(pushes[(size_t)cmd - kPushTagCmd].tag, pushes[(size_t)cmd - kPushTagCmd].remote);
         break;
     }
     Invalidate();
@@ -1743,6 +1757,8 @@ void App::ShowCommitMenu(RepoTab& t, int32_t row, float x, float y) {
     AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) ? MF_GRAYED : 0), 13, L"Create tag here…");
     AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) ? MF_GRAYED : 0), 11, L"Check out this commit (detached HEAD)");
     AppendMenuW(m, MF_STRING | busy | ((cm.flags & CF_STASH) || d.unborn ? MF_GRAYED : 0), 12, L"Revert this commit…");
+    const std::vector<PushTagChoice> pushes = PushTagChoices(t, c);
+    AppendPushTagItems(m, pushes, busy);
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, 1, L"Copy commit SHA\tCtrl+C");
     AppendMenuW(m, MF_STRING, 2, L"Copy short SHA");
@@ -1767,7 +1783,9 @@ void App::ShowCommitMenu(RepoTab& t, int32_t row, float x, float y) {
     case 2: CopyToClipboard(hwnd, cm.id.Hex(7)); break;
     case 3: CopyToClipboard(hwnd, CommitMessage(t, c)); break;
     case 4: if (d.Parents(cm)[0] >= 0) SelectCommit(t, d.Parents(cm)[0]); break;
-    default: break;
+    default:
+        if (cmd >= kPushTagCmd && cmd < kPushTagCmd + (int)pushes.size()) t.PushTag(pushes[(size_t)cmd - kPushTagCmd].tag, pushes[(size_t)cmd - kPushTagCmd].remote);
+        break;
     }
     Invalidate();
 }

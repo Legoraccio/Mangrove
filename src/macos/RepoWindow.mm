@@ -763,6 +763,17 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     return i;
 }
 
+// The tags of a commit, each to each remote, after a separator.
+- (void)addPushTags:(NSMenu*)m commit:(int32_t)c ref:(int)ri {
+    RepoSession* s = _session.get();
+    const std::vector<PushTagChoice> pushes = PushTagChoices(*s, c, ri);
+    if (!pushes.empty()) [m addItem:NSMenuItem.separatorItem];
+    for (const PushTagChoice& pc : pushes) {
+        NSString* title = [NSString stringWithFormat:@"Push Tag %@ to %@", NS(pc.tag), NS(pc.remote)];
+        [self add:m title:title action:@selector(menuPushTag:) tag:0 enabled:!s->opBusy].representedObject = @[ NS(pc.tag), NS(pc.remote) ];
+    }
+}
+
 - (void)fillCommitMenu:(NSMenu*)m commit:(int32_t)c {
     [m removeAllItems];
     m.autoenablesItems = NO;
@@ -794,6 +805,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     [self add:m title:@"New Tag Here…" action:@selector(menuNewTag:) tag:c enabled:!busy && !stash];
     [self add:m title:@"Check Out This Commit (Detached HEAD)" action:@selector(menuCheckoutDetached:) tag:c enabled:!busy && !stash];
     [self add:m title:@"Revert This Commit…" action:@selector(menuRevert:) tag:c enabled:!busy && !stash && !d.unborn];
+    [self addPushTags:m commit:c ref:-1];
     [m addItem:NSMenuItem.separatorItem];
     [self add:m title:@"Copy Commit ID" action:@selector(menuCopyId:) tag:c enabled:YES];
     [self add:m title:@"Copy Short ID" action:@selector(menuCopyShortId:) tag:c enabled:YES];
@@ -824,6 +836,7 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
     [self add:m title:checkout action:@selector(menuCheckoutRef:) tag:ri enabled:!busy && !r.head];
     [self add:m title:@"New Branch Here…" action:@selector(menuNewBranch:) tag:r.commit enabled:!busy && r.commit >= 0];
     [self add:m title:@"New Tag Here…" action:@selector(menuNewTag:) tag:r.commit enabled:!busy && r.commit >= 0];
+    [self addPushTags:m commit:r.commit ref:ri];
     const std::vector<DeleteChoice> deletes = DeleteChoices(*s, ri);  // the branch here, the remote one, both
     if (!deletes.empty()) [m addItem:NSMenuItem.separatorItem];
     for (const DeleteChoice& dc : deletes) {
@@ -851,6 +864,10 @@ static NSView* MessageView(NSString* title, NSString* detail, BOOL spinner, NSAr
 - (void)menuReview:(NSMenuItem*)i { [self reviewChanges]; }
 - (void)menuNewBranch:(NSMenuItem*)i { [self newBranchAt:(int32_t)i.tag]; }
 - (void)menuNewTag:(NSMenuItem*)i { [self newTagAt:(int32_t)i.tag]; }
+- (void)menuPushTag:(NSMenuItem*)i {
+    NSArray<NSString*>* names = i.representedObject;  // the tag and the remote
+    if (_session) _session->PushTag(WS(names[0]), WS(names[1]));
+}
 - (void)menuDeleteBranch:(NSMenuItem*)i {
     NSArray<NSString*>* names = i.representedObject;  // the local branch and the remote one, "" for the one kept
     [self deleteBranch:WS(names[0]) remote:WS(names[1])];

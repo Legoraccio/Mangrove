@@ -192,6 +192,7 @@ public:
     std::wstring CreateBranch(const std::wstring& name, int32_t commit);  // why it can't; empty once started
     std::wstring CheckNewTag(const std::wstring& name) const;             // why a new tag can't have this name; empty when it can
     std::wstring CreateTag(const std::wstring& name, int32_t commit);     // a lightweight tag; why it can't, empty once started
+    void PushTag(const std::wstring& name, const std::wstring& remote);   // a remote's tag of that name on another commit stays: git refuses
     // The local branch and the remote branch of the same name that go together: for a local branch the one it
     // tracks (or, with no upstream, one of the same name, origin's first); for a remote branch the local one.
     BranchPair PairOf(int ref) const;

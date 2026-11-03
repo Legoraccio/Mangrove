@@ -701,6 +701,19 @@ void RepoTab::SettingsChanged() {
 
 // ---- context menus
 
+// The tags of a commit, each to each remote, after a separator.
+void RepoTab::AddPushTags(Menu& m, int32_t commit, int ref) {
+    const std::vector<PushTagChoice> pushes = PushTagChoices(*sess, commit, ref);
+    if (!pushes.empty()) m.Section();
+    std::weak_ptr<bool> a = alive;
+    for (const PushTagChoice& pc : pushes) {
+        const std::wstring tag = pc.tag, remote = pc.remote;
+        m.Add("Push Tag " + U8(tag) + " to " + U8(remote), [this, a, tag, remote] {
+            if (a.lock() && sess) sess->PushTag(tag, remote);
+        }, !sess->opBusy);
+    }
+}
+
 void RepoTab::FillCommitMenu(Menu& m, int32_t c) {
     RepoSession* s = sess.get();
     if (!s || !s->data) return;
@@ -736,6 +749,7 @@ void RepoTab::FillCommitMenu(Menu& m, int32_t c) {
     m.Add("New Tag Here\u2026", safe([](RepoTab* t, int commit) { t->NewTagAt(commit); }, c), !busy && !stash);
     m.Add("Check Out This Commit (Detached HEAD)", safe([](RepoTab* t, int commit) { t->sess->CheckoutCommit(commit); }, c), !busy && !stash);
     m.Add("Revert This Commit\u2026", safe([](RepoTab* t, int commit) { t->RevertCommit(commit); }, c), !busy && !stash && !d.unborn);
+    AddPushTags(m, c, -1);
     m.Section();
     m.Add("Copy Commit ID", safe([](RepoTab* t, int commit) { t->Copy(U8(t->sess->data->commits[(size_t)commit].id.Hex())); }, c));
     m.Add("Copy Short ID", safe([](RepoTab* t, int commit) { t->Copy(U8(t->sess->data->commits[(size_t)commit].id.Hex(7))); }, c));
@@ -771,6 +785,7 @@ void RepoTab::FillRefMenu(Menu& m, int ri) {
     m.Add("New Tag Here\u2026", [this, a, at] {
         if (a.lock()) NewTagAt(at);
     }, !busy && at >= 0);
+    AddPushTags(m, at, ri);
     const std::vector<DeleteChoice> deletes = DeleteChoices(*s, ri);  // the branch here, the remote one, both
     if (!deletes.empty()) m.Section();
     for (const DeleteChoice& dc : deletes) {

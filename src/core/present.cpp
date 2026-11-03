@@ -216,6 +216,23 @@ std::vector<DeleteChoice> DeleteChoices(const RepoSession& s, int ref) {
     return out;
 }
 
+std::vector<PushTagChoice> PushTagChoices(const RepoSession& s, int32_t commit, int ref) {
+    std::vector<PushTagChoice> out;
+    if (!s.data) return out;
+    const RepoData& d = *s.data;
+    std::vector<std::wstring> tags;
+    if (const Ref* own = RefOf(d, ref, RefKind::Tag)) tags.push_back(own->name);  // it can be on a commit not loaded
+    if (auto it = d.labels.find(commit); it != d.labels.end())
+        for (const Label& L : it->second)
+            if (L.tag && std::find(tags.begin(), tags.end(), L.text) == tags.end()) tags.push_back(L.text);
+    std::vector<std::wstring> remotes = d.remotes;
+    std::stable_partition(remotes.begin(), remotes.end(), [](const std::wstring& r) { return r == L"origin"; });
+    for (const std::wstring& tag : tags)
+        for (const std::wstring& remote : remotes)
+            if (out.size() < 6) out.push_back({ tag, remote });
+    return out;
+}
+
 Prompt RemoveAccountPrompt(const Account& a) {
     Prompt p;
     p.title = std::wstring(L"Remove the ") + InfoOf(a.forge).name + L" account " + a.login + L"?";

@@ -45,6 +45,13 @@ struct DeleteChoice {
 };
 std::vector<DeleteChoice> DeleteChoices(const RepoSession& s, int ref);  // empty for tags
 
+// The "Push tag" items of a menu, for RepoSession::PushTag: each tag to each remote, origin first.
+struct PushTagChoice {
+    std::wstring tag, remote;  // by name
+};
+// The tag `ref`, if it is one, and the tags of the commit; at most six items, none without remotes.
+std::vector<PushTagChoice> PushTagChoices(const RepoSession& s, int32_t commit, int ref = -1);
+
 // Settings
 const std::vector<std::wstring>& PullModeLabels();  // by Settings::pullMode
 std::wstring PullModeHelp();

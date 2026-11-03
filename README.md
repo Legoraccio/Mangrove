@@ -55,9 +55,10 @@ message, author, SHA or ref name; show all branches or only the current one.
 
 **Branches, tags, stashes, remotes, submodules.** Browsable in the sidebar, with folders and
 ahead/behind counts; double-click to check out (a remote branch creates its tracking branch), or use
-the context menus: on a commit or a branch, create a branch or a tag there; on a branch, delete it
-here, on its remote, or both (the question says how many commits only that branch has). At startup
-the sidebar opens on the checked-out branch, and the sight next to *Branches* brings you back to it.
+the context menus: on a commit or a branch, create a branch or a tag there; on a tag, or a commit or
+branch that has one, push the tag to a remote; on a branch, delete it here, on its remote, or both
+(the question says how many commits only that branch has). At startup the sidebar opens on the
+checked-out branch, and the sight next to *Branches* brings you back to it.
 
 **Commit.** The uncommitted changes are the first row of the history. Stage and unstage files or
 folders, discard changes (always confirmed; a submodule goes back to the commit recorded for it),
@@ -74,9 +75,9 @@ of file" are handled; minified lines are cut around the change.
 **Git actions.** Fetch (all remotes, pruning deleted branches), pull (merge if possible,
 fast-forward only, or rebase, with local changes set aside and put back), push (creating the upstream
 when there is none; when the remote is ahead, pull or force push with `--force-with-lease`), new
-branch and tag, delete a branch, stash and pop, check out, revert. Each runs on its own thread with
-git's progress on screen. **Undo and redo** cover checkouts, new branches and tags, deleted local
-branches, stashes, commits and reverts made in Mangrove, as long as nothing was pushed.
+branch and tag, push a tag, delete a branch, stash and pop, check out, revert. Each runs on its own
+thread with git's progress on screen. **Undo and redo** cover checkouts, new branches and tags,
+deleted local branches, stashes, commits and reverts made in Mangrove, as long as nothing was pushed.
 
 **Clone.** Paste an address, or pick one of the repositories of your accounts (they are listed as
 you type, private ones included), choose the folder, and the clone opens in place of the start page.
@@ -286,10 +287,10 @@ The styles, the icons and the keyboard shortcuts window are compiled into the pr
   on every platform: UTF-8/16/32 text, paths and command lines, the sidebar trees, interface texts, the
   settings file, accounts (token checks, git's authorization environment, the credential store, the
   answers of the services' APIs) and real repositories created in the temporary folder: read with git
-  (history, refs, graph, status, details, diffs, line counts), then worked on through a session (tags,
-  undo and redo, deleting branches here and on a remote, discarding a submodule and a nested
-  repository) and cloned. On Linux the credential store is tested with `MANGROVE_TEST_SECRETS=1`,
-  in a session with an unlocked keyring (as CI does).
+  (history, refs, graph, status, details, diffs, line counts), then worked on through a session (tags
+  and pushing them, undo and redo, deleting branches here and on a remote, discarding a submodule and
+  a nested repository) and cloned. On Linux the credential store is tested with
+  `MANGROVE_TEST_SECRETS=1`, in a session with an unlocked keyring (as CI does).
 - **`tools/patchtest`** (`run.ps1` / `run.sh`): partial patches. It stages, unstages and discards every
   hunk, every line and hundreds of random selections in a throwaway repository (files without a final
   newline, CRLF, deleted and new files, repeated blocks), and checks with `git diff` that exactly the

@@ -431,6 +431,46 @@ static void TestSession(const std::filesystem::path& dir) {
     s->Redo();
     CHECK(Pump(idle) && FindRef(*s->data, RefKind::Tag, L"v1.0") >= 0);
 
+    // pushing a tag: the menus offer it where it is, and once on the remote it can't be undone
+    CHECK(s->CreateTag(L"beta", s->data->headCommit).empty() && Pump(idle));
+    {
+        const RepoData& d = *s->data;
+        const int v1 = FindRef(d, RefKind::Tag, L"v1.0"), beta = FindRef(d, RefKind::Tag, L"beta");
+        std::vector<PushTagChoice> pushes = PushTagChoices(*s, d.headCommit);
+        CHECK(pushes.size() == 2 && pushes[0].tag == L"beta" && pushes[1].tag == L"v1.0" && pushes[0].remote == L"origin");
+        pushes = PushTagChoices(*s, d.headCommit, v1);  // the one picked comes first
+        CHECK(pushes.size() == 2 && pushes[0].tag == L"v1.0" && pushes[1].tag == L"beta");
+        pushes = PushTagChoices(*s, -1, beta);  // a tag on a commit that isn't loaded
+        CHECK(pushes.size() == 1 && pushes[0].tag == L"beta");
+        pushes = PushTagChoices(*s, d.headCommit, FindRef(d, RefKind::Local, L"main"));  // a branch offers the tags of its commit
+        CHECK(pushes.size() == 2 && pushes[0].tag == L"beta");
+    }
+    Git(root, L"remote add backup " + QuoteArg(origin));  // origin comes first, though git lists it after
+    s->StartLoad(true);
+    CHECK(Pump(idle));
+    {
+        const std::vector<PushTagChoice> pushes = PushTagChoices(*s, s->data->headCommit);
+        CHECK(pushes.size() == 4 && pushes[0].remote == L"origin" && pushes[1].remote == L"backup" && pushes[2].tag == L"v1.0");
+    }
+    Git(root, L"remote remove backup");
+    s->StartLoad(true);
+    CHECK(Pump(idle));
+    CHECK(s->undo.size() >= 2 && s->undo.back().branch == L"beta");
+    s->PushTag(L"v1.0", L"origin");
+    CHECK(Pump(idle) && !s->notice.error && s->notice.message.find(L"now on origin") != std::wstring::npos);
+    CHECK(RunGitOp(origin, L"", L"rev-parse -q --verify refs/tags/v1.0").ok() && !RunGitOp(origin, L"", L"rev-parse -q --verify refs/tags/beta").ok());
+    CHECK(!s->undo.empty() && s->undo.back().branch == L"beta");  // only the tag pushed left the undo stack
+    for (const UndoEntry& e : s->undo) CHECK(e.branch != L"v1.0");
+    s->PushTag(L"v1.0", L"origin");
+    CHECK(Pump(idle) && !s->notice.error && s->notice.message.find(L"already had it") != std::wstring::npos);
+    // the remote's tag of the same name on another commit stays where it is
+    Git(root, L"push -q origin main~1:refs/tags/beta");
+    s->PushTag(L"beta", L"origin");
+    CHECK(Pump(idle) && s->notice.error && s->notice.message.find(L"another commit") != std::wstring::npos);
+    CHECK(!s->undo.empty() && s->undo.back().branch == L"beta");  // refused: it can still be undone
+    s->Undo();
+    CHECK(Pump(idle) && FindRef(*s->data, RefKind::Tag, L"beta") < 0);
+
     // the branches that go together, and the commits only they have
     {
         const RepoData& d = *s->data;

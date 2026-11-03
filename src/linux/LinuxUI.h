@@ -283,6 +283,7 @@ private:
     void BuildRepository();
     void SessionEvent_(SessionEvent e);
     void NewRefAt(int32_t commit, bool tag);  // the name of a new branch or tag
+    void AddPushTags(Menu& m, int32_t commit, int ref);  // the "Push Tag" items of a menu
     void UpdateContent();
     void SelectionChanged();
     void Changed();  // the window shows this tab's state anew

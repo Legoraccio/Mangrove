@@ -964,6 +964,30 @@ std::wstring RepoSession::CreateTag(const std::wstring& input, int32_t commit) {
     return L"";
 }
 
+void RepoSession::PushTag(const std::wstring& name, const std::wstring& remote) {
+    if (!data || opBusy) return;
+    std::weak_ptr<RepoSession> wk = shared_from_this();
+    RunOp(ActPush, L"Pushing the tag " + name, [name, remote, wk](const OpCtx& c) {
+        OpOutcome o;
+        o.statusOnly = true;  // no ref moves here
+        const GitOpResult r = c.RunNet(L"push --progress " + QuoteArg(remote) + L" " + QuoteArg(L"refs/tags/" + name));
+        if (!r.ok()) {
+            o.title = L"Couldn't push the tag " + name;
+            o.message = Contains(r.err, "(already exists)") ? remote + L" has a tag with this name on another commit." : GitErrorText(r);
+            return o;
+        }
+        o.ok = true;
+        o.title = L"Pushed the tag " + name;
+        o.message = Contains(r.err, "Everything up-to-date") ? remote + L" already had it." : L"It is now on " + remote + L".";
+        // On a remote, deleting it here wouldn't take it back: the next fetch would bring it again.
+        o.then = [wk, name] {
+            if (auto self = wk.lock())
+                std::erase_if(self->undo, [&](const UndoEntry& e) { return e.kind == UndoEntry::Kind::CreateTag && e.branch == name; });
+        };
+        return o;
+    });
+}
+
 // ---- deleting branches
 
 BranchPair RepoSession::PairOf(int ri) const {
